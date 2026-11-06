@@ -14,6 +14,16 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plug
 
 ## Install
 
+### From npm
+
+```bash
+dsh plugin --profile web add dsh-long-context-budget
+```
+
+Restart DSH afterwards; the package registers itself through `cordis.patch.yml`.
+
+### From source
+
 1. Copy this folder into your DSH plugins directory (the workspace `plugins/` folder), e.g. `E:\plugins\long-context-budget`.
 2. Install dependencies:
    ```bash
@@ -23,7 +33,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plug
    ```yaml
    - insert:
        - id: long-context-budget
-         name: '@local/dsh-long-context-budget'
+         name: 'dsh-long-context-budget'
          config: {}
    ```
 4. Restart or reload DSH so the patch and client bundle are picked up. Client-plugin changes reload without a refresh only while `pnpm run dev:web` runs from the DSH checkout; otherwise rebuild the Web artifacts and refresh.
@@ -46,7 +56,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plug
 | `README.zh.md` | Full Chinese documentation |
 | `icon.svg` | Plugin icon |
 | `scripts/` | Tier-math check, pre-step hook test, budget-slider test, and local UI/debug probes |
-| `package.json` | Plugin manifest (`@local/dsh-long-context-budget`, v0.2.1) |
+| `package.json` | Plugin manifest (`dsh-long-context-budget`, v0.2.1) |
 
 ## Scripts
 

@@ -14,6 +14,16 @@
 
 ## 安装
 
+### 从 npm 安装
+
+```bash
+dsh plugin --profile web add dsh-long-context-budget
+```
+
+装好后重启 DSH；包内 `cordis.patch.yml` 会自动完成注册。
+
+### 从源码安装
+
 1. 把本文件夹复制到 DSH 的插件目录（工作区 `plugins/` 下），例如 `E:\plugins\long-context-budget`。
 2. 安装依赖：
    ```bash
@@ -23,7 +33,7 @@
    ```yaml
    - insert:
        - id: long-context-budget
-         name: '@local/dsh-long-context-budget'
+         name: 'dsh-long-context-budget'
          config: {}
    ```
 4. 重载或重启 DSH，使补丁与 client bundle 生效。Client 插件改动只有在 DSH 源码树里同时运行 `pnpm run dev:web` 时才免刷新热重载；否则需要重建前端产物并刷新页面。
@@ -46,7 +56,7 @@
 | `README.zh.md` | 完整中文文档 |
 | `icon.svg` | 插件图标 |
 | `scripts/` | 分级数学校验、pre-step 钩子测试、滑杆测试、本地 UI/调试探针 |
-| `package.json` | 插件清单（`@local/dsh-long-context-budget`，v0.2.1） |
+| `package.json` | 插件清单（`dsh-long-context-budget`，v0.2.1） |
 
 ## 脚本
 

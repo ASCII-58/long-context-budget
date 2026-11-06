@@ -18,7 +18,7 @@
  * `/context-budget <token 数>` 命令（`ctx.get('remote.commands')`）。
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-long-context-budget',
+  id: 'dsh-long-context-budget',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
