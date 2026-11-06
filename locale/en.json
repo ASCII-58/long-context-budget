@@ -17,6 +17,6 @@
   "trigger.window": "Window",
   "meta": {
     "title": "Context length budget",
-    "description": "Adds a discrete tier slider to the right of the composer for choosing a per-session context budget; when usage passes 70% of the budget, the oldest history is pruned and compacted before the next step."
+    "description": "Adds a discrete tier slider beside the composer for a per-session context budget; when usage passes 70% of the budget, the oldest history is pruned and compacted before the next step."
   }
 }

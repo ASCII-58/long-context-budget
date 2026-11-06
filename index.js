@@ -704,19 +704,19 @@ export function apply(ctx, rawConfig) {
   ctx.effect(() => {
     const dispose = ctx.commands.register({
       name: settings.command,
-      description: '设置本会话上下文预算（token 数；0 取消） / Set the context budget for this session (token count; 0 clears it).',
-      input: { hint: '<token 数，0 取消限制 / token count, 0 = no limit>' },
+      description: '设置本会话的上下文预算（token 数；0 表示取消） / Set this session’s context budget (token count; 0 clears it).',
+      input: { hint: '<token 数；0 表示取消 / token count; 0 clears it>' },
       /* 命令自己拥有这份输入，日志里不必再重复一遍。 */
       recordInput: false,
       handler: async (invocation) => {
         const raw = String(invocation.rawInput ?? '').trim();
         const tokens = Number(raw);
         if (!Number.isFinite(tokens) || tokens < 0) {
-          return { kind: 'error', text: '用法：/context-budget <token 数>（0 取消限制） / Usage: /context-budget <token count> (0 clears it)' };
+          return { kind: 'error', text: '用法：/context-budget <token 数>（0 表示取消） / Usage: /context-budget <token count> (0 clears it)' };
         }
         const agent = invocation.agent;
         const sessionId = agent?.session?.id;
-        if (!sessionId) return { kind: 'error', text: '当前会话不可用 / No active session' };
+        if (!sessionId) return { kind: 'error', text: '当前会话不可用 / No active session.' };
 
         /*
          * `windowOf` 要等一次 `resolveModelInfo`（可能走网络）。整个 handler
@@ -746,8 +746,8 @@ export function apply(ctx, rawConfig) {
           kind: 'success',
           text:
             next > 0
-              ? `上下文预算已设为 ${next} token（窗口 ${window}），超过 ${triggerAt} 时会在下一步开始前自动压缩 / Budget set to ${next} tokens (window ${window}); the oldest history is compacted before the next step once usage passes ${triggerAt}`
-              : '已取消上下文预算限制 / Context budget limit cleared',
+              ? `上下文预算已设为 ${next} token（窗口 ${window}）；超过 ${triggerAt} 时，下一步开始前会自动压缩最早的历史 / Budget set to ${next} tokens (window ${window}); once usage passes ${triggerAt}, the oldest history is compacted before the next step`
+              : '已取消上下文预算限制 / Context budget cleared',
         };
       },
     });
@@ -760,7 +760,7 @@ export function apply(ctx, rawConfig) {
   ctx.effect(() => {
     const dispose = ctx.commands.register({
       name: `${settings.command}-status`,
-      description: '查询本会话当前生效的上下文预算 / Report the effective context budget for this session.',
+      description: '查询本会话当前生效的上下文预算 / Report this session’s effective context budget.',
       recordInput: false,
       handler: async (invocation) => {
         const sessionId = invocation.agent?.session?.id;

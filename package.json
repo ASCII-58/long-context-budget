@@ -1,9 +1,18 @@
 {
   "name": "@local/dsh-long-context-budget",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
-  "description": "每会话上下文预算：超预算 70% 时先剪枝、再压缩最早历史；输入框右侧按 min(128K,(窗口−256K)×0.5) 分级选择。 / Per-session context budget: prunes then compacts the oldest history at 70% of budget, with a tiered slider on the composer.",
+  "description": "每会话上下文预算：超过预算 70% 时自动剪枝并压缩最早历史，输入框右侧滑杆分级选择。 / Per-session context budget: prunes and compacts the oldest history at 70% of the budget, with a tiered slider on the composer.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ASCII-58/long-context-budget.git"
+  },
+  "homepage": "https://github.com/ASCII-58/long-context-budget#readme",
+  "engines": {
+    "dsh": ">=0.2.0 <0.3.0"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -17,7 +26,9 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {

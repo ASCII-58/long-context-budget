@@ -2,15 +2,15 @@
 
 [English](README.md) | [简体中文](README.zh.md)
 
-A [DeepSeek Harness](https://github.com/) client plugin that adds a **per-session context budget** control. It shows a compact trigger on the right side of the composer, lets you pick a discrete context-window tier, and automatically compacts the oldest history before the next agent step when the context grows beyond the chosen budget.
+A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin that puts a **per-session context budget** on the composer. A compact trigger opens a discrete tier slider; once the context grows past the chosen budget, the oldest history is pruned and compacted **before the next step**, so every request fits — without interrupting the session.
 
-> This is a plugin for DeepSeek Harness (DSH). It is loaded through the host's plugin / `cordis.patch.yml` mechanism; it is not a standalone app or an npm library.
+> This is a DSH plugin, loaded through the host plugin mechanism and `cordis.patch.yml`. It is not a standalone app or an npm library.
 
-## What it does
+## How it works
 
-- **Client half** (`client.js`): injects a Claude-Code-style discrete tier slider into `conversation.input.right`. The trigger displays the currently active budget tier; the panel lists the available tiers and the 70% trigger point, and reports "takes effect on the next step". The context-window capacity is kept in the tooltip / aria label as a reference.
-- **Host half** (`index.js`): remembers the selected budget per session (in memory, mirrored to the client's `localStorage`). On every `agent/pre-step`, if the whole context pack exceeds `0.7 × budget`, it first does a zero-cost tool-result prune; if still over budget, it runs the host's own `compaction.compactRegion` to summarize the oldest history down toward `0.5 × budget`, then continues the session without interruption. When no budget is set, the plugin is completely inert.
-- **Tier math** (`tiers.js`): the single canonical implementation. For a context window `W > 256K`, the step is `min(128K, (W − 256K) × 0.5)`; tiers span `[256K, W]` with the full window as the last tier. `client.js` inlines a byte-for-byte copy of this math (the client half is a single-file browser module and cannot use a relative import); `scripts/check-tier-math.mjs` compares both copies against a batch of windows to prevent drift.
+- **Composer control** (`client.js`): adds a Claude Code–style discrete tier slider to `conversation.input.right`. The trigger shows the active tier; the panel lists the available tiers and the 70% trigger point, and notes that a change takes effect on the next step. The context-window size stays in the tooltip and aria label as a reference.
+- **Budget enforcement** (`index.js`): remembers the chosen budget per session (in memory, mirrored to the client's `localStorage`). On every `agent/pre-step`, if the whole context pack exceeds `0.7 × budget`, it first runs a zero-cost tool-result prune; if that is not enough, it calls the host's `compaction.compactRegion` to summarize the oldest history down toward `0.5 × budget`, then resumes the session. When no budget is set, the plugin stays out of the way entirely.
+- **Tier math** (`tiers.js`): one canonical implementation. For a context window `W > 256K`, the step is `min(128K, (W − 256K) × 0.5)`; tiers span `[256K, W]`, with the full window as the last tier. `client.js` keeps a byte-identical copy (the client half is a single-file browser module and cannot use relative imports); `scripts/check-tier-math.mjs` compares both copies over a batch of windows to catch drift.
 
 ## Install
 
@@ -19,34 +19,34 @@ A [DeepSeek Harness](https://github.com/) client plugin that adds a **per-sessio
    ```bash
    pnpm install
    ```
-3. Register the plugin in your `cordis.patch.yml` (the included one does exactly this):
+3. Register it in `cordis.patch.yml` (the included file already does this):
    ```yaml
    - insert:
        - id: long-context-budget
          name: '@local/dsh-long-context-budget'
          config: {}
    ```
-4. Reload / restart DSH so the patch and the client bundle are picked up. Client-plugin changes reload without a refresh only while `pnpm run dev:web` is running from the DSH checkout; otherwise rebuild the affected Web artifacts and refresh.
+4. Restart or reload DSH so the patch and client bundle are picked up. Client-plugin changes reload without a refresh only while `pnpm run dev:web` runs from the DSH checkout; otherwise rebuild the Web artifacts and refresh.
 
-## Usage
+## Use
 
 - Click the **Context (上下文)** trigger to the right of the composer to open the budget panel.
-- Move the slider to a tier (Tighter → Roomier / Full window). The chosen tier is sent to the host via the `/context-budget <token count>` command; `0` clears the per-session override.
-- Before every step, the host enforces the budget as described above. The top tier equals "no extra limit".
+- Pick a tier on the slider (Tighter → Roomier → Full window). The choice goes to the host through `/context-budget <token count>`; `0` clears the per-session override.
+- Before every step the host enforces the budget as described above. The top tier means "no extra limit".
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
 | `index.js` | Host half: budget state, `agent/pre-step` enforcement, `/context-budget` command |
-| `client.js` | Client half: composer trigger, budget slider, API wiring |
+| `client.js` | Client half: composer trigger, budget slider, command channel |
 | `tiers.js` | Canonical tier math |
 | `cordis.patch.yml` | Plugin registration patch |
-| `locale/*.json` | zh / en UI strings (registered to the host `long-context-budget` locale namespace) |
+| `locale/*.json` | zh / en UI strings, registered to the host `long-context-budget` locale namespace |
 | `README.zh.md` | Full Chinese documentation |
 | `icon.svg` | Plugin icon |
 | `scripts/` | Tier-math check, pre-step hook test, budget-slider test, and local UI/debug probes |
-| `package.json` | Plugin manifest (`@local/dsh-long-context-budget`, v0.2.0) |
+| `package.json` | Plugin manifest (`@local/dsh-long-context-budget`, v0.2.1) |
 
 ## Scripts
 
@@ -56,7 +56,7 @@ node scripts/test-pre-step-hook.mjs     # exercise the pre-step budget enforceme
 node scripts/test-budget-slider.mjs     # exercise the budget slider logic
 ```
 
-The `probe-*.mjs` and `read-asar-file.mjs` scripts are local debugging helpers that target a running local DSH instance; they are not part of the plugin runtime.
+The `probe-*.mjs` and `read-asar-file.mjs` scripts are local debugging helpers that target a running DSH instance; they are not part of the plugin runtime.
 
 ## Internationalization
 
@@ -65,7 +65,7 @@ The UI ships both Chinese and English strings:
 - `locale/zh.json` / `locale/en.json` are registered to the host locale namespace `long-context-budget`.
 - `client.js` carries a built-in `DICTIONARIES.zh / DICTIONARIES.en` fallback for when the host locale service, the namespace, or a key is missing.
 - The host follows the active UI language (Chinese → zh, anything else → en).
-- Host-side command hints, success/error replies and Config descriptions are written bilingually (Chinese / English) so they stay readable under any language without depending on the host locale service.
+- Host-side command hints, success/error replies and Config descriptions are written bilingually (Chinese / English), so they stay readable under any language without depending on the host locale service.
 
 ## License
 
