@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "每会话上下文预算：每一步开始前若整包上下文超过预算的 70%，先剪枝、再压缩最早的历史并继续会话；输入框右侧面板按 min(128K,(窗口−256K)×0.5) 分级选择预算。",
+  "description": "每会话上下文预算：超预算 70% 时先剪枝、再压缩最早历史；输入框右侧按 min(128K,(窗口−256K)×0.5) 分级选择。 / Per-session context budget: prunes then compacts the oldest history at 70% of budget, with a tiered slider on the composer.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

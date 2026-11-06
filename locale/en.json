@@ -1,25 +1,22 @@
 {
-  "meta": {
-    "title": "Context usage and budget",
-    "description": "Shows context occupancy and its composition (system prompt / tools & subagents / messages / connectors & MCP / skills) right of the composer, and tiers a context window above 256K by min(128K, (window − 256K) × 0.5) per step, with the full window as the last tier. Exceeding the chosen budget summarizes the oldest history before the next step."
-  },
+  "slot.label": "Context budget",
   "trigger.label": "Context",
-  "trigger.aria": "Context usage",
-  "panel.title": "Context usage",
+  "trigger.aria": "Active context length budget",
+  "panel.title": "Context length",
   "panel.close": "Close",
-  "panel.used": "Used",
-  "panel.waiting": "Waiting for the first request",
-  "legend.system": "System prompt",
-  "legend.tools": "Tools & subagents",
-  "legend.messages": "Messages",
-  "legend.mcp": "Connectors & MCP",
-  "legend.skills": "Skills",
   "budget.label": "Budget",
+  "budget.economy": "Tighter",
+  "budget.roomy": "Roomier",
   "tier.full": "Full window",
   "tier.value": "{tier}",
   "budget.trigger": "Trigger",
-  "budget.nextRequest": "Takes effect on the next request",
+  "budget.nextRequest": "Takes effect on the next step",
   "budget.notGraded": "This model window does not exceed 256K, so no tiers apply",
   "budget.unknownWindow": "Context window not measured yet",
-  "budget.failed": "Could not save the budget"
+  "budget.failed": "Could not save the budget",
+  "trigger.window": "Window",
+  "meta": {
+    "title": "Context length budget",
+    "description": "Adds a discrete tier slider to the right of the composer for choosing a per-session context budget; when usage passes 70% of the budget, the oldest history is pruned and compacted before the next step."
+  }
 }

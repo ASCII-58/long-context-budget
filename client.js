@@ -152,6 +152,7 @@ window.__ModuleLoader__.load({
        绑定，缺哪个 key 就退回这里的内置值。 */
     const DICTIONARIES = {
       zh: {
+        'slot.label': '上下文长度预算',
         'trigger.label': '上下文',
         'trigger.aria': '当前上下文长度预算',
         'panel.title': '上下文长度',
@@ -169,6 +170,7 @@ window.__ModuleLoader__.load({
         'trigger.window': '窗口',
       },
       en: {
+        'slot.label': 'Context budget',
         'trigger.label': 'Context',
         'trigger.aria': 'Active context length budget',
         'panel.title': 'Context length',
@@ -246,6 +248,19 @@ window.__ModuleLoader__.load({
       } catch {
         /* 已经注册过，或者服务不接受 —— 都无所谓。 */
         return null;
+      }
+    }
+
+    /**
+     * 槽位标签：复用同一套词条，让设置/扩展面板里的名字也跟随界面语言。
+     * 拿不到宿主 locale 服务时退回中文内置值（与原行为一致）。
+     */
+    function slotLabel() {
+      try {
+        const locale = hostCtx?.get?.('locale') ?? null;
+        return resolveStrings(locale).t('slot.label');
+      } catch {
+        return DICTIONARIES.zh['slot.label'];
       }
     }
 
@@ -997,7 +1012,8 @@ window.__ModuleLoader__.load({
                 name: SLOT,
                 id: ENTRY_ID,
                 order: 5,
-                label: () => '上下文用量',
+                /* 槽位标签走词条，宿主切到英文界面时不再冒中文。 */
+                label: () => slotLabel(),
               },
               function LongContextBudget(props) {
                 return h(BudgetSeat, props);

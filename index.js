@@ -89,37 +89,37 @@ const DEFAULTS = Object.freeze({
  * 保持一致；越界值仍由 `resolveConfig()` 夹紧，schema 只负责投影与默认值。
  */
 export const Config = Schema.object({
-  enabled: Schema.boolean().default(DEFAULTS.enabled).description('总开关；关掉后完全不介入会话'),
+  enabled: Schema.boolean().default(DEFAULTS.enabled).description('总开关；关掉后完全不介入会话 / Master switch; off = never intervene in a session'),
   triggerRatio: Schema.number()
     .min(0.05)
     .max(0.95)
     .default(DEFAULTS.triggerRatio)
-    .description('触发压缩的阈值比例（相对会话预算）'),
+    .description('触发压缩的阈值比例（相对会话预算） / Trigger ratio relative to the session budget'),
   targetRatio: Schema.number()
     .min(0.05)
     .max(0.9)
     .default(DEFAULTS.targetRatio)
-    .description('压缩目标比例（相对会话预算），实际保留量另有 64K 下限'),
+    .description('压缩目标比例（相对会话预算），实际保留量另有 64K 下限 / Target ratio relative to the session budget (kept tail has a 64K floor)'),
   maxAttempts: Schema.number()
     .min(1)
     .max(8)
     .step(1)
     .default(DEFAULTS.maxAttempts)
-    .description('单次检查最多连续压缩几次'),
+    .description('单次检查最多连续压缩几次 / Max compaction attempts per check'),
   minIntervalMs: Schema.number()
     .min(0)
     .max(60000)
     .step(100)
     .default(DEFAULTS.minIntervalMs)
-    .description('两次压缩之间的最小间隔（毫秒），防止死循环'),
+    .description('两次压缩之间的最小间隔（毫秒），防止死循环 / Min interval between compactions (ms), guards against loops'),
   baseTokens: Schema.number()
     .min(1024)
     .default(DEFAULTS.baseTokens)
-    .description('分级起点：上下文窗口不超过它就不分级'),
+    .description('分级起点：上下文窗口不超过它就不分级 / Tier base: windows at or below this get no tiers'),
   stepCap: Schema.number()
     .min(1024)
     .default(DEFAULTS.stepCap)
-    .description('层级单段最大跨度'),
+    .description('层级单段最大跨度 / Max span of a single tier step'),
 });
 
 /** 合并用户配置并夹紧到安全范围。 */
@@ -704,19 +704,19 @@ export function apply(ctx, rawConfig) {
   ctx.effect(() => {
     const dispose = ctx.commands.register({
       name: settings.command,
-      description: 'Set the context budget for this session (token count; 0 clears it).',
-      input: { hint: '<token 数，0 表示不额外限制>' },
+      description: '设置本会话上下文预算（token 数；0 取消） / Set the context budget for this session (token count; 0 clears it).',
+      input: { hint: '<token 数，0 取消限制 / token count, 0 = no limit>' },
       /* 命令自己拥有这份输入，日志里不必再重复一遍。 */
       recordInput: false,
       handler: async (invocation) => {
         const raw = String(invocation.rawInput ?? '').trim();
         const tokens = Number(raw);
         if (!Number.isFinite(tokens) || tokens < 0) {
-          return { kind: 'error', text: '用法：/context-budget <token 数>（0 表示不额外限制）' };
+          return { kind: 'error', text: '用法：/context-budget <token 数>（0 取消限制） / Usage: /context-budget <token count> (0 clears it)' };
         }
         const agent = invocation.agent;
         const sessionId = agent?.session?.id;
-        if (!sessionId) return { kind: 'error', text: '当前会话不可用' };
+        if (!sessionId) return { kind: 'error', text: '当前会话不可用 / No active session' };
 
         /*
          * `windowOf` 要等一次 `resolveModelInfo`（可能走网络）。整个 handler
@@ -746,8 +746,8 @@ export function apply(ctx, rawConfig) {
           kind: 'success',
           text:
             next > 0
-              ? `上下文预算已设为 ${next} token（窗口 ${window}），超过 ${triggerAt} 时会在下一步开始前自动压缩`
-              : '已取消上下文预算限制',
+              ? `上下文预算已设为 ${next} token（窗口 ${window}），超过 ${triggerAt} 时会在下一步开始前自动压缩 / Budget set to ${next} tokens (window ${window}); the oldest history is compacted before the next step once usage passes ${triggerAt}`
+              : '已取消上下文预算限制 / Context budget limit cleared',
         };
       },
     });
@@ -760,7 +760,7 @@ export function apply(ctx, rawConfig) {
   ctx.effect(() => {
     const dispose = ctx.commands.register({
       name: `${settings.command}-status`,
-      description: 'Report the effective context budget for this session.',
+      description: '查询本会话当前生效的上下文预算 / Report the effective context budget for this session.',
       recordInput: false,
       handler: async (invocation) => {
         const sessionId = invocation.agent?.session?.id;

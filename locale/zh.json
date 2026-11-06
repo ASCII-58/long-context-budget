@@ -1,25 +1,22 @@
 {
-  "meta": {
-    "title": "上下文用量与预算",
-    "description": "输入框右侧显示上下文占用比例与构成（系统提示词 / 工具及子智能体 / 对话消息 / 连接器及MCP / 技能），并为超过 256K 的上下文窗口分级：步长 min(128K, (窗口−256K)×0.5)，最后一级是整窗。超限时自动把最早的历史压成摘要，让每一轮请求真的落在预算之内。"
-  },
+  "slot.label": "上下文长度预算",
   "trigger.label": "上下文",
-  "trigger.aria": "上下文用量",
-  "panel.title": "上下文用量",
+  "trigger.aria": "当前上下文长度预算",
+  "panel.title": "上下文长度",
   "panel.close": "关闭",
-  "panel.used": "已使用",
-  "panel.waiting": "等待首次请求",
-  "legend.system": "系统提示词",
-  "legend.tools": "工具及子智能体",
-  "legend.messages": "对话消息",
-  "legend.mcp": "连接器及MCP",
-  "legend.skills": "技能",
   "budget.label": "预算",
+  "budget.economy": "更省",
+  "budget.roomy": "更宽",
   "tier.full": "整窗",
   "tier.value": "{tier}",
   "budget.trigger": "触发点",
-  "budget.nextRequest": "下一次请求生效",
+  "budget.nextRequest": "下一步请求生效",
   "budget.notGraded": "当前模型窗口未超过 256K，无需分级",
   "budget.unknownWindow": "尚未测量上下文窗口",
-  "budget.failed": "预算设置失败"
+  "budget.failed": "预算设置失败",
+  "trigger.window": "窗口",
+  "meta": {
+    "title": "上下文长度预算",
+    "description": "输入框右侧提供离散档位滑杆，按会话选择上下文预算；超过预算 70% 时，在下一步请求前自动剪枝并压缩最早的历史。"
+  }
 }
