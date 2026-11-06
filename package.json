@@ -1,0 +1,38 @@
+{
+  "name": "@local/dsh-long-context-budget",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "每会话上下文预算：每一步开始前若整包上下文超过预算的 70%，先剪枝、再压缩最早的历史并继续会话；输入框右侧面板按 min(128K,(窗口−256K)×0.5) 分级选择预算。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "tiers.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.1",
+    "zod": "4.6.6"
+  }
+}
