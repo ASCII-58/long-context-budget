@@ -141,7 +141,7 @@ const next = async () => {
   return { kind: 'enter', messages: [] };
 };
 
-await hook.listener({ agent, messages: [{ role: 'user' }], signal: { aborted: false } }, next);
+await hook.listener({ agent, messages: [{ role: 'user' }], step: 1, signal: { aborted: false } }, next);
 findings.noBudget_nextCalled = nextCalls === 1;
 findings.noBudget_pruneCalls = prunerCalls.length;
 findings.noBudget_compactCalls = compactionCalls.length;
@@ -153,7 +153,7 @@ await registeredCommands
 
 state.totalTokens = 800000;
 nextCalls = 0;
-await hook.listener({ agent, messages: [{ role: 'user' }], signal: { aborted: false } }, next);
+await hook.listener({ agent, messages: [{ role: 'user' }], step: 1, signal: { aborted: false } }, next);
 findings.budget_pruneCalls = prunerCalls.length;
 findings.budget_compactCalls = compactionCalls.length;
 findings.budget_nextCalled = nextCalls === 1;
@@ -168,13 +168,13 @@ compaction.compactRegion = async () => {
 };
 nextCalls = 0;
 await hook.listener(
-  { agent, messages: [{ role: 'user' }], signal: { aborted: false } },
+  { agent, messages: [{ role: 'user' }], step: 1, signal: { aborted: false } },
   next,
 );
 findings.fail_compactAttempts = failCalls;
 findings.fail_nextCalled = nextCalls === 1;
 
-/* 6) 空 messages 快路径：完全不测量 */
+/* 6) step 0 且空 messages：这一轮不会真正执行，完全不测量 */
 state.totalTokens = 999999;
 let measured = 0;
 ctx._services.set('tokenMeter', {
@@ -184,15 +184,22 @@ ctx._services.set('tokenMeter', {
   },
 });
 nextCalls = 0;
-await hook.listener({ agent, messages: [], signal: { aborted: false } }, next);
-findings.emptyMessages_measureCalls = measured;
-findings.emptyMessages_nextCalled = nextCalls === 1;
+await hook.listener({ agent, messages: [], step: 0, signal: { aborted: false } }, next);
+findings.emptyMessagesAtStep0_measureCalls = measured;
+findings.emptyMessagesAtStep0_nextCalled = nextCalls === 1;
+
+/* 6b) 中途 step 的空 messages：仍要检查并压缩（长回合涨过阈值的关键路径） */
+measured = 0;
+nextCalls = 0;
+await hook.listener({ agent, messages: [], step: 5, signal: { aborted: false } }, next);
+findings.emptyMessagesMidTurn_measureCalls = measured;
+findings.emptyMessagesMidTurn_nextCalled = nextCalls === 1;
 
 /* 7) 监听器抛错也必须 next() */
 nextCalls = 0;
 const badAgent = null;
 await hook.listener(
-  { agent: badAgent, messages: [{ role: 'user' }], signal: { aborted: false } },
+  { agent: badAgent, messages: [{ role: 'user' }], step: 1, signal: { aborted: false } },
   next,
 );
 findings.badAgent_nextCalled = nextCalls === 1;

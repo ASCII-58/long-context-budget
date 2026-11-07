@@ -559,7 +559,7 @@ export function apply(ctx, rawConfig) {
    * 阈值 `0.7 × 预算`，先剪枝再摘要，目标 `0.5 × 预算`；最多压 `maxAttempts` 次。
    * 任何异常都只记日志 —— 压缩是优化，绝不能拦住这一轮或下一轮。
    */
-  const enforce = async (agent, signal, messages) => {
+  const enforce = async (agent, signal) => {
     if (!settings.enabled) return;
     if (signal?.aborted) return;
     const session = agent?.session;
@@ -567,12 +567,6 @@ export function apply(ctx, rawConfig) {
 
     const budget = budgetBySession.get(session.id) ?? 0;
     if (!(budget > 0)) return;
-
-    /*
-     * pre-step 的 `messages` 是本轮**待进入的唤醒消息**，不是历史。为空只表示
-     * 这一步不开新 step（`turn()` 会 break），压缩纯属白干，直接跳过。
-     */
-    if (Array.isArray(messages) && messages.length === 0) return;
 
     const { meter, compaction, pruner } = scoped(agent);
     if (!meter || !compaction) {
@@ -669,15 +663,22 @@ export function apply(ctx, rawConfig) {
   ctx.effect(() => {
     const dispose = ctx.on(
       'agent/pre-step',
-      async ({ agent, messages, signal }, next) => {
+      async ({ agent, messages, step, signal }, next) => {
         /*
          * 与 compaction-basic 同点，但必须 prepend 抢在它前面：
          * 它用冻结的 config 算阈值，先跑可能把我们要压的区间压掉。
          * waterfall 语义：不调用 next() 等于否决整条链，因此下面无条件返回 next()。
+         *
+         * `messages` 是这一步从 inbox 认领的输入，不是历史：用户消息只在 step 0
+         * 出现，工具调用之后的后续 step 通常为空，但循环仍会继续执行 step。
+         * 所以只有「step 0 且没有认领到消息」才表示这一轮不会真正开始（`turn()`
+         * 会直接 completed），此时压缩纯属白干；其余空消息必须照常检查，
+         * 否则长回合中途涨过阈值也永远不会压缩。
          */
         try {
           if (signal?.aborted) return next();
-          await enforce(agent, signal, messages);
+          if (Array.isArray(messages) && messages.length === 0 && step === 0) return next();
+          await enforce(agent, signal);
         } catch (error) {
           log('warn', `budget enforcement crashed: ${error instanceof Error ? error.message : String(error)}`);
         }
