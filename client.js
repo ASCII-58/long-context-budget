@@ -900,16 +900,30 @@ window.__ModuleLoader__.load({
       const stored = sessionId ? Number(budgets[sessionId]) : 0;
       const budget = Number.isFinite(stored) && stored > 0 ? stored : 0;
 
-      /* 挂载时把本地的选择推给宿主：宿主是权威，宿主重启后选择也要跟回来。 */
+      /* 挂载时把本地的选择推给宿主：宿主是权威，宿主重启后选择也要跟回来。
+         命令通道刚启动时可能还没就绪，失败要退避重试几次，否则界面显示着
+         预算、宿主却是空的，压缩会静默失效。 */
       useEffect(() => {
         if (!sessionId) return undefined;
         const value = Number(readLocalBudgets()[sessionId]);
         if (!Number.isFinite(value) || value <= 0) return undefined;
         const controller = new AbortController();
-        writeBudget(sessionId, value, controller.signal).catch(() => {
-          /* 推不上去就等用户下一次拖动；不打扰界面。 */
-        });
-        return () => controller.abort();
+        let timer = 0;
+        let attempt = 0;
+        const push = () => {
+          if (controller.signal.aborted) return;
+          writeBudget(sessionId, value, controller.signal).catch(() => {
+            if (controller.signal.aborted) return;
+            attempt += 1;
+            if (attempt >= 4) return;
+            timer = setTimeout(push, 400 * 2 ** attempt);
+          });
+        };
+        push();
+        return () => {
+          controller.abort();
+          clearTimeout(timer);
+        };
       }, [sessionId]);
 
       const commit = useCallback(
