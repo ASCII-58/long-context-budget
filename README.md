@@ -25,7 +25,6 @@
 | --- | --- |
 | DeepSeek Harness (DSH) | `>=0.2.0 <0.3.0` |
 | Node.js (development only) | `>=22.12` |
-| Platform | DSH Web (the client half targets `web`) |
 
 ## Installation
 

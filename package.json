@@ -1,9 +1,19 @@
 {
   "name": "dsh-long-context-budget",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "description": "每会话上下文预算：超过预算 70% 时自动剪枝并压缩最早历史，输入框右侧滑杆分级选择。 / Per-session context budget: prunes and compacts the oldest history at 70% of the budget, with a tiered slider on the composer.",
   "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "context-budget",
+    "token-budget",
+    "compaction",
+    "context-compression",
+    "conversation-ui"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ASCII-58/long-context-budget.git"

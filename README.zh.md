@@ -25,7 +25,6 @@
 | --- | --- |
 | DeepSeek Harness（DSH） | `>=0.2.0 <0.3.0` |
 | Node.js（仅开发需要） | `>=22.12` |
-| 平台 | DSH Web（Client 半边面向 `web`） |
 
 ## 安装
 
