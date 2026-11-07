@@ -13,7 +13,7 @@
 
 ## Features
 
-- **Composer control** — a compact trigger and a Claude Code–style discrete tier slider, injected at `conversation.input.right`.
+- **Composer control** — a compact trigger and a Claude Code–style discrete tier slider at `conversation.input.right`, with continuous drag, magnetic snapping to tiers and a direction-aware value transition.
 - **Budget enforcement** — before every `agent/pre-step`, if the packed context exceeds `triggerRatio × budget`, a zero-cost tool-result prune runs first; only then does the host compaction summarize the oldest history toward `targetRatio × budget`.
 - **Discrete tiers** — tiers are derived from the model's context window by `min(128K, (W − 256K) × 0.5)`, with the full window as the last tier. Windows at or below 256K need no tiers.
 - **Opt-in behaviour** — without a budget, the plugin does nothing at all.

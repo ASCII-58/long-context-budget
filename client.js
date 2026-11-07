@@ -286,7 +286,7 @@ window.__ModuleLoader__.load({
 /* 预算切换件：照 Claude Code 风格的「思考强度」滑杆排布。
    动画一律走 transform（合成器线程），不碰 left / width —— 那两属性每帧
    都要重排+重绘，切档时就会卡顿。fill 用 scaleX、knob 用 translate3d。 */
-.lcb-slider{--lcb-accent:var(--dsw-alias-brand-primary,#d97757);display:flex;flex-direction:column;gap:3px;margin:0}
+.lcb-slider{--lcb-accent:var(--dsw-alias-brand-primary,#d97757);--lcb-ease-glide:cubic-bezier(.22,.61,.36,1);--lcb-duration-move:.2s;--lcb-timing-feedback:.12s ease;display:flex;flex-direction:column;gap:3px;margin:0}
 .lcb-slider-head{display:flex;align-items:baseline;gap:6px;min-width:0}
 .lcb-slider-label{flex:none;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary,#b9bec7)}
 .lcb-slider-value{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:16px;font-weight:500;color:var(--dsw-alias-label-primary,#e6e8eb);font-variant-numeric:tabular-nums}
@@ -295,12 +295,12 @@ window.__ModuleLoader__.load({
 .lcb-slider-track{position:relative;height:30px;margin-top:2px;cursor:pointer;touch-action:none;outline:none;border-radius:8px;contain:layout paint style}
 .lcb-slider-track:before{content:"";position:absolute;left:0;right:0;top:50%;height:26px;margin-top:-13px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
 .lcb-slider-fill-clip{position:absolute;left:0;top:50%;width:100%;height:26px;margin-top:-13px;border-radius:8px 0 0 8px;overflow:hidden;pointer-events:none;contain:layout paint style}
-.lcb-slider-fill{position:absolute;inset:0;background:color-mix(in srgb,var(--lcb-accent) 24%,transparent);transform:scaleX(0);transform-origin:left center;will-change:transform;transition:transform .16s cubic-bezier(.2,.7,.3,1)}
+.lcb-slider-fill{position:absolute;inset:0;background:color-mix(in srgb,var(--lcb-accent) 24%,transparent);transform:scaleX(0);transform-origin:left center;will-change:transform;transition:transform var(--lcb-duration-move) var(--lcb-ease-glide),opacity var(--lcb-duration-move) ease}
 .lcb-slider-ticks{position:absolute;inset:0;pointer-events:none}
 .lcb-slider-tick{position:absolute;top:50%;width:4px;height:4px;margin-top:-2px;transform:translate3d(-50%,0,0);border-radius:50%;background:color-mix(in srgb,var(--dsw-alias-label-primary,#e6e8eb) 26%,transparent)}
-.lcb-slider-knob{position:absolute;left:0;top:50%;width:16px;height:30px;margin-top:-15px;border-radius:5px;background:var(--dsw-alias-bg-elevated,#fff);box-shadow:0 1px 3px rgba(0,0,0,.28),0 0 0 1px rgba(0,0,0,.06);pointer-events:none;transform:translate3d(0,0,0);will-change:transform;transition:transform .16s cubic-bezier(.2,.7,.3,1),box-shadow .16s ease}
-.lcb-slider[data-dragging] .lcb-slider-knob,.lcb-slider[data-dragging] .lcb-slider-fill{transition:none}
-.lcb-slider[data-dragging] .lcb-slider-knob{scale:1.06}
+.lcb-slider-knob{position:absolute;left:0;top:50%;width:16px;height:30px;margin-top:-15px;border-radius:5px;background:var(--dsw-alias-bg-elevated,#fff);box-shadow:0 1px 3px rgba(0,0,0,.28),0 0 0 1px rgba(0,0,0,.06);pointer-events:none;transform:translate3d(0,0,0);will-change:transform,scale;scale:1;transition:transform var(--lcb-duration-move) var(--lcb-ease-glide),scale var(--lcb-timing-feedback),box-shadow .3s ease}
+.lcb-slider[data-dragging] .lcb-slider-fill{transition:none}
+.lcb-slider[data-dragging] .lcb-slider-knob{scale:1.1;transition:scale var(--lcb-timing-feedback),box-shadow .3s ease}
 .lcb-slider[data-apex] .lcb-slider-fill{background:color-mix(in srgb,var(--lcb-accent) 42%,transparent)}
 .lcb-slider[data-apex] .lcb-slider-knob{box-shadow:0 0 10px color-mix(in srgb,var(--lcb-accent) 60%,transparent),0 0 0 1px color-mix(in srgb,var(--lcb-accent) 35%,transparent)}
 .lcb-slider[data-apex] .lcb-slider-value{color:var(--lcb-accent)}
@@ -310,7 +310,11 @@ window.__ModuleLoader__.load({
 .lcb-slider-track:focus-visible{outline:2px solid var(--lcb-accent);outline-offset:1px;border-radius:10px}
 .lcb-status{margin-top:6px;color:var(--dsw-alias-label-tertiary,#8b929c)}
 .lcb-error{margin-top:6px;color:var(--dsw-alias-state-error-primary,#ef4444)}
-@media (prefers-reduced-motion:reduce){.lcb-slider-fill,.lcb-slider-knob{transition:none}}
+/* 档位文案切换：按方向滑入并轻微模糊，和滑块一起构成「换挡」的手感。 */
+@keyframes lcb-value-swap{from{opacity:.35;transform:translateY(calc(6px * var(--lcb-swap-dir,1)));filter:blur(3px)}to{opacity:1;transform:translateY(0);filter:blur(0)}}
+.lcb-slider-value{animation:lcb-value-swap var(--lcb-duration-move) var(--lcb-ease-glide) both}
+.lcb-slider[data-dragging] .lcb-slider-value{animation:none}
+@media (prefers-reduced-motion:reduce){.lcb-slider-fill,.lcb-slider-knob{transition:none}.lcb-slider-value{animation:none}}
 `;
 
     /* --------------------------------------------------------------- 预算存储 */
@@ -523,9 +527,22 @@ window.__ModuleLoader__.load({
       const t = strings.t;
 
       const trackRef = useRef(null);
+      /* 第 1 个 useState 必须是 width：scripts/test-budget-slider.mjs 依赖这个顺序。 */
       const [width, setWidth] = useState(0);
       const [dragging, setDragging] = useState(false);
       const [previewIndex, setPreviewIndex] = useState(-1);
+      /* 拖动过程中的连续像素位置；null = 由已提交档位推导。 */
+      const [knobPx, setKnobPx] = useState(null);
+      /* 指针移动超过死区才进入「拖动」视觉态，避免点击时抖一下。 */
+      const [engaged, setEngaged] = useState(false);
+      /* 档位文案切换的方向与代号（±1），驱动滑入/模糊动画。 */
+      const [swap, setSwap] = useState({ key: 0, dir: 1 });
+
+      const anchorXRef = useRef(0);
+      const pointXRef = useRef(0);
+      const frameRef = useRef(0);
+      const lastIndexRef = useRef(-1);
+      const lastSelectedRef = useRef(selectedTier);
 
       const count = tiers.length;
       const disabled = !gradable || busy || count === 0;
@@ -564,34 +581,86 @@ window.__ModuleLoader__.load({
 
       const KNOB = 16;
       const span = Math.max(0, width - KNOB);
-      const ratio = count < 2 || activeIndex <= 0 ? 0 : activeIndex / (count - 1);
-      const knobLeft = Math.round(ratio * span);
 
-      /* 指针 x → 最近档位下标。 */
-      const indexAt = useCallback(
-        (clientX) => {
-          const node = trackRef.current;
-          if (!node || count === 0) return -1;
-          if (count === 1) return 0;
-          const rect = node.getBoundingClientRect();
-          if (span <= 0) return committedIndex;
-          const local = clientX - rect.left - KNOB / 2;
-          const position = Math.max(0, Math.min(1, local / span));
-          return Math.round(position * (count - 1));
+      /* 档位 → 像素。离散档位只决定最终停靠点；拖动过程中滑块走连续像素。 */
+      const indexToPx = useCallback(
+        (index) => {
+          if (count < 2 || index <= 0) return 0;
+          return (Math.min(index, count - 1) / (count - 1)) * span;
         },
-        [count, span, committedIndex]
+        [count, span]
       );
 
-      /* 拖动期间在 document 上跟手；指针可能在面板外松开。 */
+      /* 磁性吸附：滑块靠近刻度时被轻轻吸住，离开时再放开。
+         与 dsh-claude-style「思考强度」滑杆同一套公式（q = 0.8），
+         让离散档位也有连续拖动的顺滑感，而不是一格一格跳。 */
+      const MAGNET = 0.8;
+      const warp = useCallback(
+        (rawPx) => {
+          if (count < 2 || span <= 0) return rawPx;
+          const segment = span / (count - 1);
+          if (segment <= 0) return rawPx;
+          const index = Math.floor(rawPx / segment);
+          if (index >= count - 1) return rawPx;
+          const fraction = (rawPx - index * segment) / segment;
+          return (index + fraction - (MAGNET * Math.sin(2 * Math.PI * fraction)) / (2 * Math.PI)) * segment;
+        },
+        [count, span]
+      );
+
+      const activePx = knobPx === null ? indexToPx(activeIndex) : knobPx;
+      const knobLeft = Math.round(activePx);
+
+      /* 指针 x → 连续像素位置（夹在轨道内并做磁性吸附）。 */
+      const pointerToPx = useCallback(
+        (clientX) => {
+          const node = trackRef.current;
+          if (!node || span <= 0) return 0;
+          const rect = node.getBoundingClientRect();
+          const raw = Math.max(0, Math.min(span, clientX - rect.left - KNOB / 2));
+          return warp(raw);
+        },
+        [span, warp]
+      );
+
+      const pxToIndex = useCallback(
+        (px) => {
+          if (count === 0 || span <= 0) return -1;
+          if (count === 1) return 0;
+          return Math.max(0, Math.min(count - 1, Math.round((px / span) * (count - 1))));
+        },
+        [count, span]
+      );
+
+      /* 拖动期间在 document 上跟手；指针可能在面板外松开。
+         rAF 合并 pointermove：每帧最多写一次位置，高速拖动也不空转。
+         指针移动超过 3px 才进入视觉「拖动」态，避免单击时抖一下。 */
       useEffect(() => {
         if (!dragging) return undefined;
-        const onMove = (event) => {
-          const next = indexAt(event.clientX);
-          /* 只在档位真的变了才 setState：pointermove 每帧都来，同一档内
-             反复 setState 会让 React 空转，视觉上就是「切档时一顿一顿」。 */
+        const flush = () => {
+          frameRef.current = 0;
+          const px = pointerToPx(pointXRef.current);
+          setKnobPx(px);
+          const next = pxToIndex(px);
           if (next >= 0) setPreviewIndex((current) => (current === next ? current : next));
         };
-        const onUp = () => setDragging(false);
+        const onMove = (event) => {
+          pointXRef.current = event.clientX;
+          /* 一旦越过死区就保持拖动态到松手，回移不反复切换。 */
+          setEngaged((current) => current || Math.abs(event.clientX - anchorXRef.current) >= 3);
+          if (frameRef.current) return;
+          frameRef.current =
+            typeof requestAnimationFrame === 'function' ? requestAnimationFrame(flush) : setTimeout(flush, 16);
+        };
+        const onUp = () => {
+          if (frameRef.current) {
+            if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frameRef.current);
+            else clearTimeout(frameRef.current);
+            frameRef.current = 0;
+          }
+          setDragging(false);
+          setEngaged(false);
+        };
         document.addEventListener('pointermove', onMove);
         document.addEventListener('pointerup', onUp, true);
         document.addEventListener('pointercancel', onUp, true);
@@ -600,16 +669,42 @@ window.__ModuleLoader__.load({
           document.removeEventListener('pointerup', onUp, true);
           document.removeEventListener('pointercancel', onUp, true);
         };
-      }, [dragging, indexAt]);
+      }, [dragging, pointerToPx, pxToIndex]);
 
-      /* 松手之后才 commit：一次拖动最多一次命令往返。 */
+      /* 档位变化时给文案一个方向感：向上/向下滑入并轻微模糊。 */
+      useEffect(() => {
+        if (lastIndexRef.current === activeIndex) return;
+        const dir = activeIndex >= lastIndexRef.current ? 1 : -1;
+        lastIndexRef.current = activeIndex;
+        setSwap((current) => ({ key: current.key + 1, dir }));
+      }, [activeIndex]);
+
+      /* 已提交档位被宿主或其它入口改动时，把连续位置同步回刻度。 */
+      useEffect(() => {
+        if (dragging) return;
+        if (lastSelectedRef.current === selectedTier) return;
+        lastSelectedRef.current = selectedTier;
+        setKnobPx(indexToPx(committedIndex));
+      }, [selectedTier, committedIndex, indexToPx, dragging]);
+
+      /* 轨道宽度变化（窗口缩放/面板重排）时，把连续位置按新像素重算。 */
+      const spanRef = useRef(span);
+      useEffect(() => {
+        if (spanRef.current === span) return;
+        spanRef.current = span;
+        if (!dragging) setKnobPx(indexToPx(committedIndex));
+      }, [span, dragging, indexToPx, committedIndex]);
+
+      /* 松手之后才 commit：一次拖动最多一次命令往返。
+         先把连续位置吸附到目标刻度，再触发提交；提交结果回来时位置已经对齐。 */
       useEffect(() => {
         if (dragging || previewIndex < 0) return;
         const target = tiers[previewIndex];
+        setKnobPx(indexToPx(previewIndex));
         setPreviewIndex(-1);
         if (!Number.isFinite(target) || target === selectedTier) return;
         onSelectTier(target);
-      }, [dragging, previewIndex, tiers, selectedTier, onSelectTier]);
+      }, [dragging, previewIndex, tiers, selectedTier, onSelectTier, indexToPx]);
 
       const commitIndex = useCallback(
         (index) => {
@@ -667,7 +762,7 @@ window.__ModuleLoader__.load({
         'div',
         {
           className: 'lcb-slider',
-          'data-dragging': dragging ? 'true' : undefined,
+          'data-dragging': engaged ? 'true' : undefined,
           'data-apex': count > 1 && currentIndex === count - 1 ? '' : undefined,
           'data-disabled': disabled ? '' : undefined,
         },
@@ -675,7 +770,15 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'lcb-slider-head' },
           h('span', { className: 'lcb-slider-label' }, t('budget.label')),
-          h('span', { className: 'lcb-slider-value' }, valueText),
+          h(
+            'span',
+            {
+              key: swap.key,
+              className: 'lcb-slider-value',
+              style: { '--lcb-swap-dir': String(swap.dir) },
+            },
+            valueText
+          ),
           h('span', { className: 'lcb-slider-meta' }, metaText)
         ),
         h(
@@ -714,8 +817,13 @@ window.__ModuleLoader__.load({
               } catch {
                 /* 捕获失败也能靠 document 监听跟手。 */
               }
-              const next = indexAt(event.clientX);
-              setPreviewIndex(next);
+              /* 按下即定位（不经过档位跳变），松手再吸附提交。 */
+              const px = pointerToPx(event.clientX);
+              anchorXRef.current = event.clientX;
+              pointXRef.current = event.clientX;
+              setEngaged(false);
+              setKnobPx(px);
+              setPreviewIndex(pxToIndex(px));
               setDragging(true);
             },
           },
