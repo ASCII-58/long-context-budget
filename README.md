@@ -186,19 +186,31 @@ The `probe-*.mjs` and `read-asar-file.mjs` scripts are local debugging helpers a
 
 ## Changelog
 
-### 0.2.9
+### 0.2.9 · production release
 
-- **A budget can be set before the window is known**: the window falls back through `contextPressure` → the `contextBudget` projection → `/context-budget-status` → the last measured window (localStorage) → a generic absolute ladder (`128K/256K/512K/1M`), so a brand-new session is usable before its first request; estimated or generic tiers are labelled, and the host realigns the budget once the real window arrives.
-- The host's default-route window resolution now retries until its services are ready (up to ~2s) and **no longer blocks** projection registration; a new `lastSeenWindow` backs new sessions with any window already measured in this process.
-- With generic tiers the top step is no longer called "full window", and an unset budget still renders as "—" instead of a number that looks applied.
+0.2.4–0.2.8 were local iterations that were never published on their own; 0.2.9 folds them into one production release (npm goes straight from 0.2.3 to it).
 
-### 0.2.8
+**Added**
 
-- The client reads the `contextBudget` session projection instead of running commands on mount (no more duplicate `command/*` rows in the transcript); the budget is log-derived and survives a host restart.
+- Session projection `contextBudget`: the budget, window and settings are published by the host and the client only reads them — mounting the panel sends no command, so no duplicate `command/*` rows land in the transcript anymore; the budget is log-derived and survives a host restart.
+- A budget can be set before the window is known: the window falls back through `contextPressure` → the projection → `/context-budget-status` → the last measured window (localStorage) → a generic ladder (`128K/256K/512K/1M`); estimated or generic tiers are labelled, and the host realigns the budget once the real window arrives.
+- `/context-budget-status` returns JSON (budget, window and the settings sent to the UI) as the fallback when the projection is absent, and as a debugging aid.
 
-### 0.2.7
+**Improved**
 
-- `baseTokens` / `stepCap` are configurable, so tiers, trigger ratio and trigger point all follow the config; `/context-budget-status` returns JSON; fixed `minIntervalMs: 0` being mistaken for the default.
+- `baseTokens` / `stepCap` are configurable, so tiers, trigger ratio and trigger point all follow the config and the UI can no longer drift from the host.
+- Slider animation: continuous drag, magnetic snapping to tiers and a direction-aware value transition.
+- Default-route window resolution now retries until its services are ready (up to ~2s) and no longer blocks projection registration; a new `lastSeenWindow` backs new sessions with any window already measured in this process.
+
+**Fixed**
+
+- `minIntervalMs: 0` is no longer mistaken for the default 1000ms.
+- Removed the unreachable `step === 0` early exit: every step of a long multi-tool turn now checks the budget.
+- Compaction failure, missing services and "no budget" all fall through to `next()` and never stall a turn.
+
+### 0.2.3
+
+- Slider animation and tier interaction polish (the previous npm latest).
 
 ### 0.2.0
 
