@@ -1,6 +1,6 @@
 {
   "name": "dsh-long-context-budget",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "type": "module",
   "description": "每会话上下文预算：超过预算触发比例时自动剪枝并压缩最早历史，输入框右侧滑杆分级选择，档位与触发比例随配置下发。 / Per-session context budget: prunes and compacts the oldest history at a configurable trigger ratio, with a tiered composer slider whose tiers and trigger ratio follow the host config.",
   "license": "MIT",

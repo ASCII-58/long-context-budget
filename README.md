@@ -1,51 +1,51 @@
 # dsh-long-context-budget
 
-[English](README.md) | [简体中文](README.zh.md)
+[English](README.en.md) | 简体中文
 
 [![npm](https://img.shields.io/npm/v/dsh-long-context-budget?logo=npm)](https://www.npmjs.com/package/dsh-long-context-budget)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![DSH](https://img.shields.io/badge/DSH-%3E%3D0.2.0%20%3C0.3.0-3b82f6)](https://github.com/deepseek-ai/deepseek-harness)
 [![GitHub](https://img.shields.io/github/stars/ASCII-58/long-context-budget?logo=github)](https://github.com/ASCII-58/long-context-budget)
 
-> A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin published on npm: a **per-session context budget** on the composer. Pick a budget tier once; when the context grows past it, the oldest history is pruned and compacted **before the next step**, so every request fits — without interrupting the session.
+> 一个发布在 npm 上的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）插件：在输入框旁提供**按会话的上下文预算**。选好预算档位后，一旦上下文超过它，最早的历史会在**下一步开始前**被剪枝并压缩，让每次请求都落在预算之内，且不打断会话。
 
 ---
 
-## Features
+## 功能
 
-- **Composer control** — a compact trigger and a Claude Code–style discrete tier slider at `conversation.input.right`, with continuous drag, magnetic snapping to tiers and a direction-aware value transition.
-- **Budget enforcement** — before every `agent/pre-step`, if the packed context exceeds `triggerRatio × budget`, a zero-cost tool-result prune runs first; only then does the host compaction summarize the oldest history toward `targetRatio × budget`.
-- **Discrete tiers** — tiers are derived from the model's context window by `min(128K, (W − 256K) × 0.5)`, with the full window as the last tier. Windows at or below 256K need no tiers.
-- **Usable before the first request** — a brand-new session with no measured window can still pick a budget: the window falls back through projection → `/context-budget-status` → the last measured window → a generic ladder (`128K/256K/512K/1M`), and the host realigns it once the real window arrives.
-- **Opt-in behaviour** — without a budget, the plugin does nothing at all.
-- **Bilingual UI** — Chinese and English strings, with a built-in fallback dictionary.
+- **输入框控件** —— 在 `conversation.input.right` 注入一个紧凑触发件和 Claude Code 风格的离散档位滑杆：拖动连续跟手、靠近刻度磁性吸附，档位文案按方向滑入并轻微模糊。
+- **预算执行** —— 每次 `agent/pre-step` 前，若整包上下文超过 `triggerRatio × 预算`，先做零成本的 tool-result 剪枝；仍不够才调用宿主压缩，把最旧的历史压向 `targetRatio × 预算`。
+- **离散档位** —— 档位由模型窗口按 `min(128K, (W − 256K) × 0.5)` 推出，最后一级是整窗；窗口不超过 256K 时无需分级。
+- **首次请求前就能设** —— 会话刚建、窗口还没量到时也能选档：窗口依次退到「投影 → `/context-budget-status` → 上次实测窗口 → 通用档位 `128K/256K/512K/1M`」，真实窗口到达后由 Host 自动重新对齐。
+- **按需启用** —— 未设置预算时插件完全不介入。
+- **中英双语界面** —— 内置中英文词条与兜底词典。
 
-## Requirements
+## 环境要求
 
-| Requirement | Version |
+| 要求 | 版本 |
 | --- | --- |
-| DeepSeek Harness (DSH) | `>=0.2.0 <0.3.0` |
-| Node.js (development only) | `>=22.12` |
+| DeepSeek Harness（DSH） | `>=0.2.0 <0.3.0` |
+| Node.js（仅开发需要） | `>=22.12` |
 
-## Installation
+## 安装
 
-### From npm (recommended)
+### 从 npm 安装（推荐）
 
 ```bash
 dsh plugin add dsh-long-context-budget
 ```
 
-Optionally pin a profile:
+也可以指定 profile：
 
 ```bash
 dsh plugin --profile web add dsh-long-context-budget
 ```
 
-Restart DSH afterwards. The package carries its own `cordis.patch.yml` and registers itself through `dsh.bundle.patch`; no manual patch editing is required.
+装好后重启 DSH。包内自带 `cordis.patch.yml`，通过 `dsh.bundle.patch` 自动注册，无需手动改补丁。
 
-### From source
+### 从源码安装
 
-1. Clone the repository and install dependencies:
+1. 克隆仓库并安装依赖：
 
    ```bash
    git clone https://github.com/ASCII-58/long-context-budget.git
@@ -53,7 +53,7 @@ Restart DSH afterwards. The package carries its own `cordis.patch.yml` and regis
    pnpm install
    ```
 
-2. Register the folder in your profile's `cordis.patch.yml` (or a profile dependency pointing at the checkout):
+2. 在 profile 的 `cordis.patch.yml` 中注册（或把该目录作为 profile 依赖）：
 
    ```yaml
    - insert:
@@ -62,58 +62,53 @@ Restart DSH afterwards. The package carries its own `cordis.patch.yml` and regis
          config: {}
    ```
 
-3. Restart or reload DSH. Client-plugin changes hot-reload only while `pnpm run dev:web` runs from the DSH checkout; otherwise rebuild the Web artifacts and refresh.
+3. 重载或重启 DSH。Client 插件改动只有在 DSH 源码树里同时运行 `pnpm run dev:web` 时才免刷新热重载；否则需要重建前端产物并刷新页面。
 
-## Quick start
+## 快速使用
 
-1. Click the **Context (上下文)** trigger to the right of the composer.
-2. Pick a tier on the slider (Tighter → Roomier → Full window). The panel also shows the trigger point for the current trigger ratio (70% by default, following the host config) and notes that the change takes effect on the next step.
-3. Keep chatting. Before each step, the host checks the packed context and compacts only when the budget is exceeded. The top tier means "no extra limit".
+1. 点击输入框右侧的 **上下文（Context）** 触发件。
+2. 在滑杆上选择档位（更省 → 更宽 → 整窗）。面板同时显示当前触发比例（默认 70%，随配置变化）对应的触发点，并提示改动在下一步生效。
+3. 正常对话即可。每一步开始前，Host 会检查整包上下文，只在超出预算时压缩。最高档等于「不额外限制」。
 
-> In a brand-new session the window may not be measured yet, and the slider still works:
-> it offers a generic ladder (128K / 256K / 512K / 1M) and the panel footer says the
-> window is estimated (or not measured yet). After the first request the real tiers and
-> the full window replace them.
-> One prerequisite is worth knowing: **the host half only loads when DSH starts**, so
-> after upgrading the plugin or editing `index.js` you must restart DSH — otherwise the
-> old code keeps running.
+> 会话刚开始、还没量到窗口时，滑杆不会变灰：它先给出通用档位
+> （128K / 256K / 512K / 1M），面板脚注会说明窗口是估算的（或尚未测量）；
+> 第一次请求完成后自动换成当前模型的真实档位与整窗。
+> 已知一个前提：**Host 半边只在 DSH 启动时加载**，升级插件或改 `index.js`
+> 后必须重启 DSH，否则仍会跑旧代码。
 
-The selected tier is sent to the host through the `/context-budget` command. You can also use the command directly:
+所选档位通过 `/context-budget` 命令送到 Host，也可以直接使用命令：
 
 ```text
-/context-budget 655360     # request 640K; the host snaps down to the largest tier at or below it
-/context-budget 0          # clear the per-session budget
-/context-budget-status     # debug: effective budget, window and the settings sent to the UI (JSON)
+/context-budget 655360     # 请求 640K；Host 会向下对齐到不超过它的最大档（1M 窗口下为 640K）
+/context-budget 0          # 取消当前会话的预算
+/context-budget-status     # 调试用：返回当前生效预算、窗口与下发给 UI 的配置（JSON）
 ```
 
-> The command names `context-budget` / `context-budget-status` and the projection key
-> `contextBudget` are a fixed Host↔Client contract, not configurable: the Client is a
-> single-file module with no access to the config and no way to discover them at
-> runtime. The requested value is snapped down to a tier, so the number you type is not
-> necessarily the effective budget.
+> 命令名 `context-budget` / `context-budget-status` 与投影 key `contextBudget`
+> 是 Host 与 Client 的固定契约，不是可配置项：Client 是单文件模块，拿不到配置，
+> 也无法在运行时发现它们。预算值会向下对齐到分级档位，因此命令里写的数字
+> 不一定是最终生效值。
 >
-> **The panel does not run commands in steady state.** The budget, the context window and
-> the settings are published as the session projection `contextBudget`, and the client
-> reads that projection. Calling status on every mount writes a `command/run` +
-> `command/done` pair — one visible chat row — which is exactly the duplicate-log spam
-> users saw. `context-budget-status` is only a fallback (older host / registration
-> failure) and a debugging aid.
+> **面板平时不跑命令。** 预算、上下文窗口和配置都由 Host 发布成会话投影
+> `contextBudget`，客户端直接读投影 —— 每次挂载都调一次 status 会在聊天记录里
+> 留下一行（`command/run` + `command/done`），那正是「重复日志」的来源。
+> `context-budget-status` 只在投影缺席（老 Host / 注册失败）或调试时使用。
 
-## Configuration
+## 配置项
 
-Every option is validated and clamped by the host. Defaults are safe; only change them if you know what you need.
+所有选项都会由 Host 校验并夹紧到安全范围；默认值即推荐值，确有所需再调整。
 
-| Option | Type | Default | Description |
+| 选项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `enabled` | boolean | `true` | Master switch. When off, the plugin never intervenes. |
-| `triggerRatio` | number (0.05–0.95) | `0.7` | Fraction of the session budget that triggers compaction. |
-| `targetRatio` | number (0.05–0.9) | `0.5` | Fraction the packed context is compacted down toward (the retained tail also has a 64K floor). |
-| `maxAttempts` | integer (1–8) | `3` | Maximum consecutive compaction attempts per check. |
-| `minIntervalMs` | integer (0–60000) | `1000` | Minimum interval between compactions, to avoid loops. |
-| `baseTokens` | number (≥1024) | `262144` (256K) | Tier base: context windows at or below this are not tiered. |
-| `stepCap` | number (≥1024) | `131072` (128K) | Maximum span of a single tier step. |
+| `enabled` | boolean | `true` | 总开关。关闭后完全不介入会话。 |
+| `triggerRatio` | number（0.05–0.95） | `0.7` | 触发压缩的阈值比例（相对会话预算）。 |
+| `targetRatio` | number（0.05–0.9） | `0.5` | 压缩目标比例（相对会话预算）；保留尾部另有 64K 下限。 |
+| `maxAttempts` | integer（1–8） | `3` | 单次检查最多连续压缩几次。 |
+| `minIntervalMs` | integer（0–60000） | `1000` | 两次压缩之间的最小间隔（毫秒），防止死循环。 |
+| `baseTokens` | number（≥1024） | `262144`（256K） | 分级起点：窗口不超过它就不分级。 |
+| `stepCap` | number（≥1024） | `131072`（128K） | 层级单段最大跨度。 |
 
-Example (in your profile's `cordis.patch.yml`):
+示例（写入 profile 的 `cordis.patch.yml`）：
 
 ```yaml
 - insert:
@@ -125,84 +120,84 @@ Example (in your profile's `cordis.patch.yml`):
         maxAttempts: 3
 ```
 
-## How it works
+## 工作原理
 
-- **Host half** (`index.js`) — folds each session's budget into the **session projection `contextBudget`**: the budget comes from the `command/run.args` the `/context-budget` command writes to the log, the window from `request/context` events, and before the first request the window is resolved at activation from the default route (`agentDefaultModel` + `llm.resolveModelInfo`, with a service-readiness retry); if that resolution fails it falls back to a window already measured in this process. It hooks `agent/pre-step` with `prepend` so it runs before the stock `compaction-basic`; the host's own compaction transaction is reused rather than reimplemented. Any failure is logged and the step continues — compaction is an optimization and must never block a turn. Because the budget is log-derived, it survives a host restart.
-- **Client half** (`client.js`) — a single-file browser module (no relative imports), rendered into `conversation.input.right`. It reads the `contextBudget` projection for the budget, window and settings (a measured `contextPressure` window wins when available) and derives tiers from `baseTokens / stepCap`; the window itself falls back through projection → `/context-budget-status` → the last measured window (localStorage) → a generic absolute ladder, so **a budget can be set before the first request** and the host realigns it once the real window arrives. It sends `/context-budget` **only when the user changes a tier**, so mounting produces no command and no chat row. Only when the projection is absent (older host) does it fall back to `/context-budget-status`, at most once per page and session.
-- **Tier math** (`tiers.js`) — the canonical implementation; both pure functions accept optional `baseTokens / stepCap`. `client.js` keeps a byte-identical copy; `scripts/check-tier-math.mjs` compares both over a batch of windows under the default and two custom configs on every run.
+- **Host 半边**（`index.js`）—— 把每个会话的预算折进**会话投影 `contextBudget`**：预算来自 `/context-budget` 命令写进日志的 `command/run.args`，窗口来自 `request/context` 事件；首次请求之前，窗口由 Host 在激活时解析默认路由（`agentDefaultModel` + `llm.resolveModelInfo`，带服务就绪重试），解析不出来则退到本进程里已经量到过的窗口。它以 `prepend` 挂到 `agent/pre-step`，抢在宿主自带的 `compaction-basic` 之前执行；压缩复用宿主的压缩事务，而不是另写一套。任何异常都只记日志并继续当前步骤 —— 压缩是优化，绝不能阻塞对话。预算是日志派生的，Host 重启后照样恢复。
+- **Client 半边**（`client.js`）—— 单文件浏览器模块（不能使用相对导入），渲染进 `conversation.input.right`。它读 `contextBudget` 投影拿预算 / 窗口 / 配置（窗口另以 `contextPressure` 的真实测量优先），用 `baseTokens / stepCap` 推导档位；窗口依次退到「投影 → `/context-budget-status` → 上次实测缓存（localStorage）→ 通用绝对档位」，所以**首次请求之前也能先设预算**，真实窗口到达后再由 Host 对齐。它**只在用户改档位时**发一次 `/context-budget` 命令，挂载阶段不产生任何命令与聊天记录行。投影缺席（老 Host）时才退回 `/context-budget-status` 兜底，且同一页面每个会话最多问一次。
+- **分级数学**（`tiers.js`）—— 唯一规范实现，两个纯函数都接受可选的 `baseTokens / stepCap`。`client.js` 保留一份逐字相同的副本；`scripts/check-tier-math.mjs` 会在默认与两组自定义配置下，对一批窗口逐一比对两份实现。
 
-For a context window `W`:
+设上下文窗口为 `W`：
 
-| Window `W` | Step | Tiers |
+| 窗口 `W` | 步长 | 档位 |
 | --- | --- | --- |
-| `W ≤ 256K` | — | `[W]` (slider disabled) |
-| `256K < W ≤ 512K` | `(W − 256K) / 2` | 256K, 256K+step, `W` |
-| `W > 512K` | `128K` | 256K, 384K, 512K, … , `W` |
+| `W ≤ 256K` | — | `[W]`（滑杆不可用） |
+| `256K < W ≤ 512K` | `(W − 256K) / 2` | 256K、256K+step、`W` |
+| `W > 512K` | `128K` | 256K、384K、512K、…、`W` |
 
-## Package layout
+## 包结构
 
-| Path | Purpose |
+| 路径 | 说明 |
 | --- | --- |
-| `index.js` | Host half: `contextBudget` session projection, `agent/pre-step` enforcement, `/context-budget` command, Config schema |
-| `client.js` | Client half: composer trigger, budget slider, projection reader, command channel |
-| `tiers.js` | Canonical tier math |
-| `cordis.patch.yml` | Plugin registration patch, referenced by `dsh.bundle.patch` |
-| `locale/zh.json`, `locale/en.json` | UI strings for the `long-context-budget` locale namespace |
-| `icon.svg` | Plugin icon |
-| `scripts/` | Tier-math check, pre-step hook test, slider test, client mount test, and local debugging probes |
+| `index.js` | Host 半边：`contextBudget` 会话投影、`agent/pre-step` 执行、`/context-budget` 命令、Config 模式 |
+| `client.js` | Client 半边：触发件、预算滑杆、投影读取与命令通道 |
+| `tiers.js` | 分级数学规范实现 |
+| `cordis.patch.yml` | 插件注册补丁，由 `dsh.bundle.patch` 引用 |
+| `locale/zh.json`、`locale/en.json` | `long-context-budget` locale 命名空间的中英词条 |
+| `icon.svg` | 插件图标 |
+| `scripts/` | 分级数学校验、pre-step 钩子测试、滑杆测试、客户端挂载测试，以及本地调试探针 |
 
-### Exports
+### 导出
 
-| Specifier | File | Notes |
+| 说明符 | 文件 | 备注 |
 | --- | --- | --- |
-| `dsh-long-context-budget` | `index.js` | Host entry; named exports `Config`, `inject`, `apply`, `BASE_TOKENS` |
-| `dsh-long-context-budget/client` | `client.js` | Client bundle loaded by the host module loader |
-| `dsh-long-context-budget/locale/*.json` | `locale/*` | `zh` / `en` dictionaries |
-| `dsh-long-context-budget/icon` | `icon.svg` | Plugin icon |
+| `dsh-long-context-budget` | `index.js` | Host 入口；具名导出 `Config`、`inject`、`apply`、`BASE_TOKENS` |
+| `dsh-long-context-budget/client` | `client.js` | 由宿主模块加载器加载的 Client bundle |
+| `dsh-long-context-budget/locale/*.json` | `locale/*` | `zh` / `en` 词条 |
+| `dsh-long-context-budget/icon` | `icon.svg` | 插件图标 |
 
-## Development
+## 开发
 
 ```bash
-node scripts/check-tier-math.mjs        # verify host and client tier math agree
-node scripts/test-pre-step-hook.mjs     # exercise pre-step budget enforcement
-node scripts/test-budget-slider.mjs     # exercise the budget slider logic (incl. the pre-request projection path)
-node scripts/test-client-projection.mjs # mount path: no commands, older-host fallback, legacy budget migration
+node scripts/check-tier-math.mjs        # 校验 Host 与 Client 两份分级公式一致
+node scripts/test-pre-step-hook.mjs     # 验证 pre-step 预算执行逻辑
+node scripts/test-budget-slider.mjs     # 验证预算滑杆渲染与交互（含首次请求前读投影）
+node scripts/test-client-projection.mjs # 验证挂载不发命令、老 Host 兼容与旧预算迁移
 ```
 
-The `probe-*.mjs` and `read-asar-file.mjs` scripts are local debugging helpers aimed at a running DSH instance; they are not part of the runtime and are not shipped in the npm tarball.
+`probe-*.mjs` 与 `read-asar-file.mjs` 是面向本地运行中 DSH 实例的调试辅助脚本，不属于运行时，也不会打进 npm 包。
 
-## Compatibility
+## 兼容性
 
-- DSH `>=0.2.0 <0.3.0` (declared in `engines.dsh`).
-- Built and tested against DSH 0.2.2-rc.1 on Windows; the client half targets the Web GUI.
-- The host half depends only on public DSH services (`commands`, `sessions`, `agentPresets`, `tokenMeter`, `llm`); it never makes network requests.
+- DSH `>=0.2.0 <0.3.0`（声明在 `engines.dsh`）。
+- 在 Windows 上基于 DSH 0.2.2-rc.1 构建与测试；Client 半边面向 Web GUI。
+- Host 半边只依赖 DSH 的公开服务（`commands`、`sessions`、`agentPresets`、`tokenMeter`、`llm`），不发起任何网络请求。
 
-## Internationalization
+## 中英文界面
 
-- `meta.title` / `meta.description` in `locale/zh.json` / `locale/en.json` are read by Plugin Manager and Settings without activating the plugin (display name and description).
-- `client.js` registers its built-in `DICTIONARIES.zh / DICTIONARIES.en` to the host locale namespace `long-context-budget` at runtime; the same dictionaries are the fallback when the locale service, namespace, or a key is missing. The UI strings in the two locale JSON files mirror the built-in dictionaries and serve as static resources / documentation.
-- The host follows the active UI language (Chinese → `zh`, anything else → `en`).
-- Host-side command hints and Config descriptions are written bilingually so they stay readable in any language.
+- `locale/zh.json` / `locale/en.json` 的 `meta.title` / `meta.description` 由插件管理器与设置页读取（无需激活插件即可显示名称与说明）。
+- `client.js` 在运行时把内置的 `DICTIONARIES.zh / DICTIONARIES.en` 注册到宿主 locale 命名空间 `long-context-budget`；locale 服务、命名空间或某个 key 缺失时，同一份词典也是兜底。两份 locale JSON 里的 UI 词条与内置词典保持一致（仅作静态资源与文档用途）。
+- 宿主跟随当前界面语言（中文 → `zh`，其它语言 → `en`）。
+- Host 侧的命令提示与 Config 描述采用中英双语，任何语言下都可读。
 
-## Changelog
+## 更新记录
 
 ### 0.2.9
 
-- **Per-session context budget** — pick a budget for the current session from the composer; with no budget set the plugin does nothing at all.
-- **Tier slider** — tiers are derived from the model's context window by `min(128K, (W − 256K) × 0.5)`, with the full window as the last tier: continuous drag, magnetic snapping and a direction-aware value transition. Windows at or below 256K need no tiers.
-- **Usable before the first request** — when the window has not been measured yet the slider offers 128K / 256K / 512K / 1M and marks them as estimates; the first request replaces them with the model's real tiers.
-- **Compaction before the next step** — once the context passes the trigger ratio (70% by default) a zero-cost tool-result prune runs first; only if that is not enough is the oldest history summarized toward the target ratio (50% by default), without interrupting the conversation.
-- **Config-driven** — `triggerRatio` / `targetRatio` / `baseTokens` / `stepCap` / `maxAttempts` / `minIntervalMs` are configurable, and tiers, trigger ratio and trigger point follow them.
-- **No chat rows from the panel** — the budget, window and settings are published through the `contextBudget` session projection, so mounting the panel sends no command; the budget is derived from the session log and survives a host restart.
-- **Bilingual UI** — Chinese and English strings, with a built-in fallback dictionary.
+- **按会话的上下文预算** —— 在输入框右侧为当前会话选一个预算；不设预算时插件完全不介入。
+- **档位滑杆** —— 档位由模型窗口按 `min(128K, (W − 256K) × 0.5)` 推出，最后一级是整窗；连续拖动、靠近刻度磁性吸附、档位文案按方向滑入。窗口不超过 256K 时无需分级。
+- **首次请求之前就能设** —— 窗口还没量到时也给出可选档位（128K / 256K / 512K / 1M），并标明是估算值；第一次请求完成后自动换成当前模型的真实档位。
+- **下一步开始前压缩** —— 上下文一旦超过触发比例（默认 70%），先做零成本 tool-result 剪枝，仍然超标才把最早的历史压向目标比例（默认 50%），全程不打断会话。
+- **配置随宿主下发** —— `triggerRatio` / `targetRatio` / `baseTokens` / `stepCap` / `maxAttempts` / `minIntervalMs` 可调，档位、触发比例与触发点跟着变。
+- **面板不刷聊天记录** —— 预算、窗口与配置通过会话投影 `contextBudget` 下发，面板挂载不执行任何命令；预算从会话日志派生，Host 重启后自动恢复。
+- **中英双语界面** —— 内置中英文词条，缺词条时退回内置词典。
 
-## Links
+## 链接
 
-- npm: <https://www.npmjs.com/package/dsh-long-context-budget>
-- GitHub: <https://github.com/ASCII-58/long-context-budget>
-- Issues: <https://github.com/ASCII-58/long-context-budget/issues>
-- DSH: <https://github.com/deepseek-ai/deepseek-harness>
+- npm：<https://www.npmjs.com/package/dsh-long-context-budget>
+- GitHub：<https://github.com/ASCII-58/long-context-budget>
+- 反馈：<https://github.com/ASCII-58/long-context-budget/issues>
+- DSH：<https://github.com/deepseek-ai/deepseek-harness>
 
-## License
+## 许可
 
-MIT — see [LICENSE](LICENSE).
+MIT — 见 [LICENSE](LICENSE)。
