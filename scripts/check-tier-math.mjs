@@ -61,24 +61,33 @@ const problems = [];
 if (client.BASE_TOKENS !== BASE_TOKENS) problems.push(`BASE_TOKENS: ${client.BASE_TOKENS} != ${BASE_TOKENS}`);
 if (client.STEP_CAP !== STEP_CAP) problems.push(`STEP_CAP: ${client.STEP_CAP} != ${STEP_CAP}`);
 
-for (const window of sampleWindows()) {
-  const hostStep = stepTokens(window);
-  const clientStep = client.stepTokens(window);
-  if (hostStep !== clientStep) {
-    problems.push(`stepTokens(${window}): host ${hostStep} != client ${clientStep}`);
-    continue;
-  }
-  const hostTiers = computeTiers(window);
-  const clientTiers = client.computeTiers(window);
-  if (hostTiers.length !== clientTiers.length || hostTiers.some((value, index) => value !== clientTiers[index])) {
-    problems.push(`computeTiers(${window}): host [${hostTiers}] != client [${clientTiers}]`);
-    continue;
-  }
-  for (const tier of hostTiers.length > 0 ? hostTiers : [0]) {
-    const hostNear = nearestTier(hostTiers, tier);
-    const clientNear = client.nearestTier(clientTiers, tier);
-    if (hostNear !== clientNear) {
-      problems.push(`nearestTier(${window}, ${tier}): host ${hostNear} != client ${clientNear}`);
+/* 默认配置 + 两组自定义配置：Host 与 Client 都必须逐字一致。参数化是修掉
+   「改 baseTokens/stepCap 后 UI 档位与 Host 分叉」这一缺陷的回归护栏。 */
+const configs = [
+  { base: BASE_TOKENS, cap: STEP_CAP },
+  { base: 96 * 1024, cap: 64 * 1024 },
+  { base: 512 * 1024, cap: 256 * 1024 },
+];
+for (const { base, cap } of configs) {
+  for (const window of sampleWindows()) {
+    const hostStep = stepTokens(window, base, cap);
+    const clientStep = client.stepTokens(window, base, cap);
+    if (hostStep !== clientStep) {
+      problems.push(`stepTokens(${window}, ${base}, ${cap}): host ${hostStep} != client ${clientStep}`);
+      continue;
+    }
+    const hostTiers = computeTiers(window, base, cap);
+    const clientTiers = client.computeTiers(window, base, cap);
+    if (hostTiers.length !== clientTiers.length || hostTiers.some((value, index) => value !== clientTiers[index])) {
+      problems.push(`computeTiers(${window}, ${base}, ${cap}): host [${hostTiers}] != client [${clientTiers}]`);
+      continue;
+    }
+    for (const tier of hostTiers.length > 0 ? hostTiers : [0]) {
+      const hostNear = nearestTier(hostTiers, tier);
+      const clientNear = client.nearestTier(clientTiers, tier);
+      if (hostNear !== clientNear) {
+        problems.push(`nearestTier(${window}, ${tier}): host ${hostNear} != client ${clientNear}`);
+      }
     }
   }
 }

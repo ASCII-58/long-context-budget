@@ -3,10 +3,10 @@
  *
  * 职责（按用户确认的语义）：
  *   1. 记住每个会话当前的上下文预算（由输入框右侧面板设置，命令通道写入）；
- *   2. **每一步（step）开始前**，如果整包上下文超过 `0.7 × 预算`，先做零成本的
- *      tool-result 剪枝，仍然超标才执行宿主自己的压缩事务
+ *   2. **每一步（step）开始前**，如果整包上下文超过 `triggerRatio × 预算`（默认
+ *      0.7），先做零成本的 tool-result 剪枝，仍然超标才执行宿主自己的压缩事务
  *      （`compaction.compactRegion`），把最旧的一段历史压成摘要，目标降到
- *      `0.5 × 预算`；压完继续，不打断会话；
+ *      `targetRatio × 预算`（默认 0.5）；压完继续，不打断会话；
  *   3. 未设置预算时本插件完全不介入。
  *
  * ## 为什么挂在 `agent/pre-step`
@@ -38,46 +38,72 @@
  * `ctx.get('agentPresets').serviceFor(agent, 'compaction')`。
  * `tokenMeter` / `llm` 在 Host 平面，两处都要试。
  *
- * ## 预算的存储
+ * ## 预算的存储与会话投影
  *
- * 存在进程内的 `Map<sessionId, tokens>`。为什么不落盘：插件包里拿不到
- * `@deepseek-ai/dsh-session`（profile 的 node_modules 里没有它），
- * `session.append()` 也只接受已知事件类型，`appendPluginRecord()` 因此不可用。
- * 预算是「当前这次会话想用多大上下文」的运行期偏好，客户端同时把它镜像到
- * localStorage，重启后由客户端把值重新推回来。
+ * 预算是**会话状态**，权威来源写进会话日志：`/context-budget` 命令保留了
+ * 原始输入（`recordInput` 默认值），所以日志里有一条 `command/run{name,
+ * args}`。插件把这条事件折进自己注册的 **会话投影** `contextBudget`：
+ *
+ *   - `budget`   生效预算（已按当前窗口对齐到档位；0 = 不限制）
+ *   - `window`   路由上下文窗口（`request/context` 事件，或激活时解析的默认路由）
+ *   - 其余字段（`triggerRatio` / `targetRatio` / `baseTokens` / `stepCap`）
+ *     是 Host 配置，随视图一起下发
+ *
+ * 这样：
+ *   1. 客户端读 `useProjection('contextBudget')` 就能拿到预算 / 窗口 / 配置，
+ *      **不再需要跑 `/context-budget-status`** —— 命令会往聊天记录里写
+ *      `command/run` + `command/done` 两行，之前每次挂载都刷一行正是
+ *      用户看到的「重复日志」来源之一；
+ *   2. Host 重启后预算从日志里折回来，客户端不必再把 localStorage 的值推一遍；
+ *   3. 窗口在**第一次请求之前**就有值（激活时用 `agentDefaultModel` +
+ *      `llm.resolveModelInfo` 解析默认路由，带服务就绪重试；解析不出来时
+ *      退到本进程里量到过的窗口），面板不再显示「尚未测量上下文窗口」。
+ *
+ * 投影的 `stateSchema` / `viewSchema` 是**鸭子类型**：注册表只调用 `.parse()`，
+ * 所以不需要额外依赖（zod / schemastery 都不是必需的）。
+ *
+ * 进程内的 `Map<sessionId, tokens>` 仍保留：投影服务缺席时（极端裁剪的宿主）
+ * 它是唯一来源，而且 `agent/disposed` 清理也以它为准。
  */
 
 import Schema from '@deepseek-ai/schemastery';
-import { z } from 'zod';
 import { BASE_TOKENS, STEP_CAP, computeTiers } from './tiers.js';
 
 /** 根层级需要命令注册与会话服务。 */
 export const inject = ['commands', 'sessions'];
 
-/** 额外上下文构成的投影键（客户端按同名 key 读取）。 */
-export const COMPOSITION_PROJECTION_KEY = 'long-context-composition';
-
 export { BASE_TOKENS };
+
+/**
+ * 命令名是 Host/Client 的固定契约：Client 是单文件模块、拿不到配置，也无法
+ * 在运行时发现命令名，因此**不**把它做成可配置项。改这里就必须同步改
+ * client.js 的 `COMMAND_NAME` / `STATUS_COMMAND` / `PROJECTION_KEY`（自测会拦住漂移）。
+ */
+const COMMAND_NAME = 'context-budget';
+const STATUS_COMMAND = `${COMMAND_NAME}-status`;
+/**
+ * 会话投影 key：Host 把「预算 + 窗口 + 配置」发布成客户端可读的投影。
+ * `stateVersion` 只在状态字段或折叠语义变化时递增（改字段名要一起改
+ * client.js，两边靠 `scripts/test-budget-slider.mjs` 的契约检查对齐）。
+ */
+const PROJECTION_KEY = 'contextBudget';
+const PLUGIN_NAME = 'long-context-budget';
 
 const DEFAULTS = Object.freeze({
   /** 分级起点：窗口不超过它就不分级。 */
   baseTokens: BASE_TOKENS,
   /** 单层最大跨度。 */
   stepCap: STEP_CAP,
-  /** 触发压缩的阈值比例：`0.7 × 预算`。 */
+  /** 触发压缩的阈值比例：`triggerRatio × 预算`。 */
   triggerRatio: 0.7,
-  /** 压缩目标比例：压到 `0.5 × 预算` 以下才算收工。 */
+  /** 压缩目标比例：压到 `targetRatio × 预算` 以下才算收工。 */
   targetRatio: 0.5,
   /** 单轮最多压几次；超过就放弃并记日志，绝不卡住会话。 */
   maxAttempts: 3,
-  /** 两次压缩之间的最小间隔，防止死循环。 */
+  /** 两次压缩之间的最小间隔，防止死循环（允许 0 = 不设间隔）。 */
   minIntervalMs: 1000,
   /** 总开关。 */
   enabled: true,
-  /** 命令名，客户端按同名字符串调用。 */
-  command: 'context-budget',
-  /** 日志前缀。 */
-  name: 'long-context-budget',
 });
 
 /**
@@ -133,24 +159,35 @@ function resolveConfig(config) {
     const number = Number(value);
     return Number.isFinite(number) && number > 0 && number < 1 ? number : fallback;
   };
+  /* minIntervalMs 允许 0（=不设间隔）：先夹紧到 [0, 60000]，再取整。
+     旧实现用 positive() 会把合法的 0 误判成缺省 1000ms（P2-8）。 */
+  const rawInterval = Number(source.minIntervalMs);
+  const minIntervalMs = Number.isFinite(rawInterval)
+    ? Math.min(60000, Math.max(0, Math.floor(rawInterval)))
+    : DEFAULTS.minIntervalMs;
   return {
     baseTokens: positive(source.baseTokens, DEFAULTS.baseTokens),
     stepCap: positive(source.stepCap, DEFAULTS.stepCap),
     triggerRatio: ratio(source.triggerRatio, DEFAULTS.triggerRatio),
     targetRatio: ratio(source.targetRatio, DEFAULTS.targetRatio),
     maxAttempts: Math.min(8, positive(source.maxAttempts, DEFAULTS.maxAttempts)),
-    minIntervalMs: positive(source.minIntervalMs, DEFAULTS.minIntervalMs),
+    minIntervalMs,
     enabled: source.enabled === false ? false : DEFAULTS.enabled,
-    command:
-      typeof source.command === 'string' && /^[a-z0-9-]+$/.test(source.command)
-        ? source.command
-        : DEFAULTS.command,
-    name: typeof source.name === 'string' && source.name.length > 0 ? source.name : DEFAULTS.name,
   };
 }
 
 /**
- * 把任意预算向下对齐到「不大于请求值的最大档」。
+ * 在给定毫秒数后继续（用于服务就绪的退避轮询）。
+ *
+ * @param {number} ms 等待毫秒。
+ * @returns {Promise<void>} 到点后兑现。
+ */
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.floor(ms))));
+}
+
+/**
+ * 预算向下对齐到「不大于请求值的最大档」。
  *
  * 为什么要向下而不是就近：预算是**上限**。用户写 350K 时，就近会选到 384K，
  * 等于悄悄放宽了限制；向下取 256K/320K 才符合「我要 350K 以内」的语义。
@@ -173,158 +210,13 @@ function tierAtMost(tiers, tokens) {
   return best > 0 ? best : tiers[0];
 }
 
-/** 一层的跨度：min(stepCap, max(0, window - base) / 2)。 */
-function stepFor(windowTokens, settings) {
-  const over = Math.floor(windowTokens) - settings.baseTokens;
-  if (!(over > 0)) return 0;
-  return Math.min(settings.stepCap, Math.floor(over * 0.5));
-}
-
-/** 按配置重算层级（默认配置下与 tiers.js 完全一致）。 */
-function tiersFor(windowTokens, settings) {
-  if (settings.baseTokens === BASE_TOKENS && settings.stepCap === STEP_CAP) {
-    return computeTiers(windowTokens);
-  }
-  const total = Number.isFinite(windowTokens) ? Math.floor(windowTokens) : 0;
-  if (!(total > 0)) return [];
-  const step = stepFor(total, settings);
-  if (step <= 0) return [total];
-  const tiers = [];
-  for (let value = settings.baseTokens; value < total; value += step) tiers.push(value);
-  tiers.push(total);
-  return tiers;
-}
-
-/* ------------------------------------------------- 上下文构成：技能那一段 */
-
 /**
- * 注册一个只读投影，把「技能」这一段从对话消息里单独拆出来。
- *
- * 为什么只有技能、没有 MCP：
- *   - 技能目录是**真的**一条 surface 消息（`dsh-tool-skill/lib/index.js:966-1015`，
- *     `user/message` 且 `source.kind === 'skill-catalog'`），可以逐条定价；
- *   - MCP 的系统提示词段落根本不进事件日志（`renderPrompt` 拼完就丢了 section
- *     边界，见 `dsh-system-prompt/lib/index.js:117-119`），从 Host 侧无法可靠
- *     拆分。与其给一个猜出来的数字，不如不显示那一行。
- *
- * ## 必须处理压缩（照抄宿主的「影子价格」）
- *
- * 技能目录会被压缩掉。若只累加、不在 `compaction/summary` 之后减去被压掉的
- * 部分，这个数字会一路虚高到完全失真。宿主自己的 `contextBreakdown` 用的
- * 就是这套办法（`dsh-token-meter/lib/types/breakdown-projection.js:120-146`）：
- * `compaction/summary` 事件把被替换的 seq 区间与对应技能价「挂」在 state 上，
- * 紧随其后的那次 `replace` 把它扣掉。
- *
- * 投影是纯函数：只读事件、只用启发式定价，不发起任何调用。
+ * 按配置重算层级。直接复用 `tiers.js` 的参数化实现，Host / Client 用同一套
+ * 公式 —— 之前这里手抄了一份，改 baseTokens/stepCap 时极易与 Client 分叉。
  */
-function registerComposition(ctx, settings, log) {
-  ctx.inject(['sessionProjections'], (projectionCtx) => {
-    const meterOf = () => {
-      try {
-        return ctx.get('tokenMeter') ?? null;
-      } catch {
-        return null;
-      }
-    };
-
-    /* 存活技能目录节点（surface 顺序）+ 一条已挂起的影子价。 */
-    const stateSchema = z.object({
-      nodes: z.array(z.object({ seq: z.number(), tokens: z.number() })),
-      claim: z
-        .object({
-          start: z.number(),
-          end: z.number(),
-          tokens: z.number(),
-        })
-        .optional(),
-    });
-
-    const isSkillCatalog = (message) => message?.source?.kind === 'skill-catalog';
-
-    const viewOf = (state) => ({
-      skillTokens: state.nodes.reduce((total, node) => total + node.tokens, 0),
-    });
-
-    projectionCtx.effect(() => {
-      return projectionCtx.sessionProjections.register({
-        key: COMPOSITION_PROJECTION_KEY,
-        stateVersion: 1,
-        stateSchema,
-        init: () => ({ nodes: [] }),
-        apply: (state, event) => {
-          /* 1) 压缩发生：把被替换区间里属于技能的价挂起来，等下一次 replace 扣掉。 */
-          if (event.type === 'compaction/summary' || event.type === 'compaction/prune') {
-            const shadowed = new Set(event.data?.shadowedSeqs ?? []);
-            const start = event.data?.shadowedRange?.start;
-            const end = event.data?.shadowedRange?.end;
-            if (!Number.isFinite(start) || !Number.isFinite(end)) return state;
-            const inside = state.nodes.filter((node) => shadowed.has(node.seq));
-            if (inside.length === 0) return state;
-            return {
-              nodes: state.nodes,
-              claim: {
-                start,
-                end,
-                tokens: inside.reduce((total, node) => total + node.tokens, 0),
-              },
-            };
-          }
-
-          const claim = state.claim;
-          const unclaimed = claim === undefined ? state : { nodes: state.nodes };
-          const op = event.surfaceOp;
-
-          /* 2) 替换（压缩提交本体）：解除挂起的影子价，并把新节点按需记成技能。 */
-          if (op !== 'append' && typeof op === 'object' && op?.op === 'replace') {
-            let nodes = unclaimed.nodes;
-            if (claim !== undefined && claim.start === op.startSeq && claim.end === op.endSeq) {
-              const removed = new Set(
-                state.nodes.filter((node) => node.seq >= claim.start && node.seq <= claim.end).map((node) => node.seq)
-              );
-              nodes = nodes.filter((node) => !removed.has(node.seq));
-            }
-            if (isSkillCatalog(event.data)) {
-              const meter = meterOf();
-              if (meter && typeof meter.estimateMessage === 'function') {
-                try {
-                  const tokens = meter.estimateMessage(event.data);
-                  if (Number.isFinite(tokens) && tokens > 0) {
-                    nodes = [...nodes, { seq: event.seq, tokens }];
-                  }
-                } catch {
-                  /* 定价失败就只保留已扣除的结果。 */
-                }
-              }
-            }
-            return { nodes };
-          }
-
-          /* 3) 普通追加：只关心技能目录消息。 */
-          if (op !== 'append') return unclaimed;
-          if (event.type !== 'user/message') return unclaimed;
-          if (!isSkillCatalog(event.data)) return unclaimed;
-
-          const meter = meterOf();
-          if (!meter || typeof meter.estimateMessage !== 'function') return unclaimed;
-          let tokens;
-          try {
-            tokens = meter.estimateMessage(event.data);
-          } catch {
-            return unclaimed;
-          }
-          if (!Number.isFinite(tokens) || tokens <= 0) return unclaimed;
-          return { nodes: [...unclaimed.nodes, { seq: event.seq, tokens }] };
-        },
-        wire: {
-          viewSchema: z.object({ skillTokens: z.number() }),
-          view: viewOf,
-        },
-      });
-    }, `[${settings.name}] composition projection`);
-    log('info', 'composition projection registered');
-  });
+function tiersFor(windowTokens, settings) {
+  return computeTiers(windowTokens, settings.baseTokens, settings.stepCap);
 }
-
 
 /* ------------------------------------------------------------- 工具配对 */
 
@@ -423,7 +315,7 @@ export function apply(ctx, rawConfig) {
   const log = (level, message) => {
     try {
       const logger = ctx.logger?.[level];
-      if (typeof logger === 'function') logger.call(ctx.logger, `[${settings.name}] ${message}`);
+      if (typeof logger === 'function') logger.call(ctx.logger, `[${PLUGIN_NAME}] ${message}`);
     } catch {
       /* 日志永远不能让功能失败。 */
     }
@@ -433,13 +325,6 @@ export function apply(ctx, rawConfig) {
   const budgetBySession = new Map();
   /** sessionId -> 上一次压缩的时间戳，防死循环。 */
   const lastCompactAt = new Map();
-
-  /* 上下文构成投影：把「技能」从对话消息里单独拆出来，供面板显示。 */
-  try {
-    registerComposition(ctx, settings, log);
-  } catch (error) {
-    log('warn', `composition projection unavailable: ${error instanceof Error ? error.message : String(error)}`);
-  }
 
   const presetsOf = () => {
     try {
@@ -551,13 +436,212 @@ export function apply(ctx, rawConfig) {
     }
   };
 
-  /* -------------------------------------- 核心：每一步开始前检查并压缩 */
+  /* ------------------------------------- 会话投影：预算 / 窗口 / 配置 */
+  /*
+   * 客户端**只读投影**，不跑命令：命令会把 `command/run` + `command/done`
+   * 写进会话日志，聊天记录里各占一行 —— 之前每次挂载都对账一次，就是用户
+   * 截图里那串重复日志。投影是日志派生的：预算从 `command/run.args` 折出来，
+   * 窗口从 `request/context` 折出来，Host 重启后照样重建。
+   */
 
+  /** 默认路由的上下文窗口；激活时异步解析一次，投影 `init` 用它兜底。 */
+  let defaultWindow = 0;
+  /**
+   * 本进程里见过的最大窗口（任何会话的 `request/context` / 现场解析）。
+   *
+   * 默认路由解析不出来（模型不支持元数据查询、或服务尚未就绪）时，新会话的
+   * 投影 `init` 至少能拿到一个真实量过的值，而不是 0 —— 0 会让面板没有档位，
+   * 也就是「会话开始前不能设预算」。同一次运行里窗口基本不会变，用它兜底
+   * 比猜一个常数可靠；真窗口到达后 `request/context` 仍会覆盖它。
+   */
+  let lastSeenWindow = 0;
+  /** 已注册的投影句柄。未就绪时 `budgetOf()` 退回进程内 Map。 */
+  let projectionHandle = null;
+
+  /** 非负整数守卫：任何进入状态/视图的数字都先过这一关。 */
+  const tokenFloor = (value) => {
+    const number = Math.floor(Number(value));
+    return Number.isFinite(number) && number > 0 ? number : 0;
+  };
+
+  /**
+   * 把请求值对齐到「不大于它的最大档」。
+   *
+   * 预算语义是上限：用户点的是档位（本身就是档位值，对齐是恒等），手打
+   * 350K 时向下取到 320K，而不是就近放宽到 384K。窗口未知（0）时按原值记。
+   */
+  const alignBudget = (tokens, window) => {
+    const target = tokenFloor(tokens);
+    if (target <= 0) return 0;
+    const tiers = tiersFor(window, settings);
+    return tiers.length > 0 ? tierAtMost(tiers, target) : target;
+  };
+
+  /**
+   * 折一条会话事件进投影状态。
+   *
+   * 必须**同步**且对无关事件返回同一个引用（注册表用 `Object.is` 跳过下游
+   * 工作）。两种事件会改状态：
+   *   - `command/run`（本命令）：`args` 是用户请求的 token 数 → 对齐成 `budget`；
+   *   - `request/context`：路由窗口 → `window`，并把已有请求值按新窗口重算，
+   *     否则「窗口先未知、后测到」时 UI 显示和实际执行会分叉。
+   */
+  const foldProjection = (state, event) => {
+    if (!event || typeof event !== 'object') return state;
+    const safe = state && typeof state === 'object' ? state : { requested: 0, budget: 0, window: 0, seeded: false };
+    if (event.type === 'command/run' && event.data?.name === COMMAND_NAME) {
+      /* v0.2.7 及更早的命令设了 `recordInput: false`，日志里没有 `args`：
+         这类事件不能当成「预算 = 0」，否则用户升级后预算会凭空消失。
+         留 `seeded: false`，让客户端把 localStorage 里的旧值补推一次。 */
+      if (event.data.args === undefined) return state;
+      const requested = tokenFloor(event.data.args);
+      const window = safe.window > 0 ? safe.window : defaultWindow;
+      const budget = requested > 0 ? alignBudget(requested, window) : 0;
+      if (requested === safe.requested && budget === safe.budget && safe.seeded === true) return state;
+      return { ...safe, requested, budget, seeded: true };
+    }
+    if (event.type === 'request/context') {
+      const window = tokenFloor(event.data?.contextWindow);
+      if (window <= 0) return state;
+      /* 任何会话量到的窗口都给后续新会话当兜底（同一进程里窗口几乎不变）。 */
+      if (window > lastSeenWindow) lastSeenWindow = window;
+      if (window === safe.window) return state;
+      const budget = safe.requested > 0 ? alignBudget(safe.requested, window) : 0;
+      return { ...safe, window, budget };
+    }
+    return state;
+  };
+
+  /** 投影状态 → 客户端视图。配置是 Host 启动常量，放在视图里随投影下发。 */
+  const projectionView = (state) => ({
+    budget: tokenFloor(state?.budget),
+    window: tokenFloor(state?.window),
+    /* 预算是否来自日志里的本命令；false 时客户端做一次性迁移（推回旧值）。 */
+    seeded: state?.seeded === true,
+    triggerRatio: settings.triggerRatio,
+    targetRatio: settings.targetRatio,
+    baseTokens: settings.baseTokens,
+    stepCap: settings.stepCap,
+  });
+
+  /*
+   * 注册表只调用 `.parse()`（见 `@deepseek-ai/dsh-session-projection`），
+   * 所以这里不需要 zod / schemastery；两个 schema 负责把持久化行或视图
+   * 夹紧到安全范围，绝不抛错。
+   */
+  const projectionStateSchema = {
+    parse(value) {
+      const source = value && typeof value === 'object' ? value : {};
+      return {
+        requested: tokenFloor(source.requested),
+        budget: tokenFloor(source.budget),
+        window: tokenFloor(source.window),
+        seeded: source.seeded === true,
+      };
+    },
+  };
+
+  const projectionViewSchema = {
+    parse(value) {
+      const source = value && typeof value === 'object' ? value : {};
+      return {
+        budget: tokenFloor(source.budget),
+        window: tokenFloor(source.window),
+        seeded: source.seeded === true,
+        triggerRatio: settings.triggerRatio,
+        targetRatio: settings.targetRatio,
+        baseTokens: settings.baseTokens,
+        stepCap: settings.stepCap,
+      };
+    },
+  };
+
+  /**
+   * 解析默认路由的上下文窗口（激活时一次，带服务就绪重试）。
+   *
+   * 客户端拿不到「首次请求前」的窗口：`contextPressure` 投影要等
+   * `request/context` 事件才出现，`remote.session.modelCatalog()` 又刻意
+   * 不带 `contextWindow`。所以由 Host 用 `agentDefaultModel` + `llm`
+   * 预先解析，放进投影 —— 面板在会话刚开始时就有档位可选。
+   *
+   * **为什么必须重试**：插件 apply 可能早于 `agentDefaultModel` / `llm`
+   * 注册（加载顺序取决于宿主组合）。v0.2.8 以前这里只问一次，服务还没
+   * 就绪就直接返回 0，而且进程内再也不会重算 —— 于是整个进程生命周期里
+   * 新会话都没有默认窗口，面板永远显示「尚未测量上下文窗口」。现在按
+   * 250ms 退避等最多 ~2s；服务齐了但适配器给不出元数据时立刻退出（那是
+   * 模型本身没有窗口信息，等下去也没用）。
+   */
+  const ensureDefaultWindow = async () => {
+    if (defaultWindow > 0) return defaultWindow;
+    if (lastSeenWindow > 0) defaultWindow = lastSeenWindow;
+    const resolveOnce = async () => {
+      let selection = null;
+      let llm = null;
+      try {
+        selection = ctx.get('agentDefaultModel')?.currentSelection?.() ?? null;
+      } catch {
+        selection = null;
+      }
+      try {
+        llm = ctx.get('llm') ?? null;
+      } catch {
+        llm = null;
+      }
+      const provider = selection?.provider;
+      const model = selection?.model;
+      if (!llm || typeof llm.resolveModelInfo !== 'function' || !provider || !model) return null;
+      try {
+        const info = await llm.resolveModelInfo(provider, model);
+        return tokenFloor(info?.context?.contextWindow);
+      } catch (error) {
+        log('info', `default context window unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      /* 服务在、模型却解析不出窗口：换默认路由也没用，交给 request/context。 */
+      return 0;
+    };
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (attempt > 0) await delay(250);
+      const window = await resolveOnce();
+      if (window === null) continue; /* 服务还没就绪，继续等 */
+      if (window > 0) {
+        defaultWindow = window;
+        if (window > lastSeenWindow) lastSeenWindow = window;
+        log('info', `default context window resolved: ${window}`);
+        return window;
+      }
+      return defaultWindow;
+    }
+    log('info', 'default context window: agentDefaultModel/llm still unavailable after retries');
+    return defaultWindow;
+  };
+
+  /**
+   * 这个会话当前生效的预算。
+   *
+   * 投影是权威（日志派生，跨重启）；没有投影服务时才退回进程内 Map。
+   * 已经在本次进程里设过、但投影还没折到的事件不用担心：`command/run` 在
+   * handler 之前就写进日志了，投影在同一次提交里已经更新。
+   */
+  const budgetOf = (session) => {
+    if (!session) return 0;
+    if (projectionHandle) {
+      try {
+        const state = projectionHandle.stateOf(session);
+        if (state && typeof state === 'object') return tokenFloor(state.budget);
+      } catch {
+        /* 投影读失败就退回 Map，绝不让预算检查炸掉。 */
+      }
+    }
+    return tokenFloor(budgetBySession.get(session.id));
+  };
+
+  /* -------------------------------------- 核心：每一步开始前检查并压缩 */
   /**
    * 在 step 边界检查并压缩。
    *
-   * 阈值 `0.7 × 预算`，先剪枝再摘要，目标 `0.5 × 预算`；最多压 `maxAttempts` 次。
-   * 任何异常都只记日志 —— 压缩是优化，绝不能拦住这一轮或下一轮。
+   * 阈值 `triggerRatio × 预算`，先剪枝再摘要，目标 `targetRatio × 预算`；
+   * 最多压 `maxAttempts` 次。任何异常都只记日志 —— 压缩是优化，
+   * 绝不能拦住这一轮或下一轮。
    */
   const enforce = async (agent, signal) => {
     if (!settings.enabled) return;
@@ -565,7 +649,7 @@ export function apply(ctx, rawConfig) {
     const session = agent?.session;
     if (!session) return;
 
-    const budget = budgetBySession.get(session.id) ?? 0;
+    const budget = budgetOf(session);
     if (!(budget > 0)) return;
 
     const { meter, compaction, pruner } = scoped(agent);
@@ -663,21 +747,21 @@ export function apply(ctx, rawConfig) {
   ctx.effect(() => {
     const dispose = ctx.on(
       'agent/pre-step',
-      async ({ agent, messages, step, signal }, next) => {
+      async ({ agent, signal }, next) => {
         /*
          * 与 compaction-basic 同点，但必须 prepend 抢在它前面：
          * 它用冻结的 config 算阈值，先跑可能把我们要压的区间压掉。
          * waterfall 语义：不调用 next() 等于否决整条链，因此下面无条件返回 next()。
          *
-         * `messages` 是这一步从 inbox 认领的输入，不是历史：用户消息只在 step 0
-         * 出现，工具调用之后的后续 step 通常为空，但循环仍会继续执行 step。
-         * 所以只有「step 0 且没有认领到消息」才表示这一轮不会真正开始（`turn()`
-         * 会直接 completed），此时压缩纯属白干；其余空消息必须照常检查，
-         * 否则长回合中途涨过阈值也永远不会压缩。
+         * 每个 step 都检查一次，包括「本步认领输入为空」的中途 step（长回合
+         * 多次工具往返时，正是这些 step 会把上下文涨过阈值）。宿主 `turn()`
+         * 里首个 step 就是 `phase.step + 1 = 1`，从 0 开始、以 `step === 0`
+         * 判断「本轮是否真的开始」是错的（那分支永远不成立），所以这里不做
+         * 任何基于 step 编号的早退；`enforce()` 自己会在无预算 / 无会话 /
+         * 服务不可用 / 未超阈值时快速返回，空消息的开销只是一次测量。
          */
         try {
           if (signal?.aborted) return next();
-          if (Array.isArray(messages) && messages.length === 0 && step === 0) return next();
           await enforce(agent, signal);
         } catch (error) {
           log('warn', `budget enforcement crashed: ${error instanceof Error ? error.message : String(error)}`);
@@ -687,7 +771,89 @@ export function apply(ctx, rawConfig) {
       { prepend: true },
     );
     return () => dispose();
-  }, `[${settings.name}] step-boundary budget enforcement`);
+  }, `[${PLUGIN_NAME}] step-boundary budget enforcement`);
+
+  /* ------------------------------------------------- 投影注册（客户端只读） */
+  /*
+   * 注册**不等待**默认窗口解析：`init` 每次调用都读当时的 `defaultWindow` /
+   * `lastSeenWindow`，而会话通常在本插件激活之后才创建，解析几乎总能赶在
+   * `init` 之前完成。反过来让注册干等解析（旧实现等 1.5s）有两个坏处：
+   * 服务就绪慢时整块投影迟到，且解析一旦失败就再也没有第二次机会。
+   * 窗口解析失败也照样注册（`init` 退到 `lastSeenWindow` / 0，等
+   * `request/context` 再补），绝不能因为解析挂了就让整个插件不工作。
+   *
+   * 注册句柄归本 fiber 所有；`dispose()` 可重复调用。effect 返回的是同步
+   * disposer，异步注册完成后如果 fiber 已经销毁，就地释放句柄。
+   */
+  ctx.effect(() => {
+    let active = true;
+    const boot = async () => {
+      /* 后台解析，不阻塞注册；`init` 会用解析结果（若已完成）。 */
+      void ensureDefaultWindow();
+      /* 服务注册顺序取决于宿主组合：投影服务是 base 层，通常已经在，但插件
+         激活可能早于它。找不到就短退避重试几次，绝不因为顺序问题永久降级。 */
+      const registryOf = () => {
+        try {
+          return ctx.get('sessionProjections') ?? null;
+        } catch {
+          return null;
+        }
+      };
+      let registry = registryOf();
+      for (let attempt = 0; !registry && attempt < 6 && active; attempt += 1) {
+        await delay(400);
+        registry = registryOf();
+      }
+      if (!active) return;
+      if (!registry || typeof registry.register !== 'function') {
+        log('info', 'sessionProjections unavailable; budget stays process-local and the client falls back to /context-budget-status');
+        return;
+      }
+      const definition = {
+        key: PROJECTION_KEY,
+        stateVersion: 1,
+        stateSchema: projectionStateSchema,
+        init: () => ({
+          requested: 0,
+          budget: 0,
+          /* 默认路由解析不出来时用本进程里量到过的窗口兜底：0 会让新会话
+             在首次请求前没有任何档位可选。 */
+          window: defaultWindow > 0 ? defaultWindow : lastSeenWindow,
+          seeded: false,
+        }),
+        apply: foldProjection,
+        wire: { viewSchema: projectionViewSchema, view: projectionView, summary: false },
+      };
+      try {
+        const registered = await Promise.resolve(registry.register(definition));
+        if (!active) {
+          try {
+            await registered?.dispose?.();
+          } catch {
+            /* 已经释放过就无所谓。 */
+          }
+          return;
+        }
+        projectionHandle = registered ?? null;
+      } catch (error) {
+        log('warn', `session projection registration failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    boot().catch((error) => {
+      log('warn', `session projection bootstrap failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return () => {
+      active = false;
+      const handle = projectionHandle;
+      projectionHandle = null;
+      try {
+        const pending = handle?.dispose?.();
+        if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+      } catch {
+        /* 释放失败不该让卸载炸掉。 */
+      }
+    };
+  }, `[${PLUGIN_NAME}] session projection`);
 
   /* 会话销毁后立刻丢掉它的两份运行期状态，否则 Map 会随会话数无限增长。 */
   ctx.effect(() => {
@@ -698,22 +864,26 @@ export function apply(ctx, rawConfig) {
       lastCompactAt.delete(id);
     });
     return () => dispose();
-  }, `[${settings.name}] session cleanup`);
+  }, `[${PLUGIN_NAME}] session cleanup`);
 
   /* --------------------------------------------------------- 命令：设置预算 */
 
   ctx.effect(() => {
     const dispose = ctx.commands.register({
-      name: settings.command,
+      name: COMMAND_NAME,
       description: '设置本会话的上下文预算（token 数；0 表示取消） / Set this session’s context budget (token count; 0 clears it).',
       input: { hint: '<token 数；0 表示取消 / token count; 0 clears it>' },
-      /* 命令自己拥有这份输入，日志里不必再重复一遍。 */
-      recordInput: false,
+      /*
+       * **不能**设 `recordInput: false`：`command/run.args` 是预算进入会话
+       * 日志的唯一通道，投影（以及 Host 重启后的恢复）全靠它。命令行的
+       * 输入本来也会显示在聊天记录的那一行里，隐藏它反而让「设成了多少」
+       * 查不到。
+       */
       handler: async (invocation) => {
         const raw = String(invocation.rawInput ?? '').trim();
         const tokens = Number(raw);
         if (!Number.isFinite(tokens) || tokens < 0) {
-          return { kind: 'error', text: '用法：/context-budget <token 数>（0 表示取消） / Usage: /context-budget <token count> (0 clears it)' };
+          return { kind: 'error', text: `用法：/${COMMAND_NAME} <token 数>（0 表示取消） / Usage: /${COMMAND_NAME} <token count> (0 clears it)` };
         }
         const agent = invocation.agent;
         const sessionId = agent?.session?.id;
@@ -732,11 +902,19 @@ export function apply(ctx, rawConfig) {
           window = 0;
         }
 
-        const tiers = tiersFor(window, settings);
-        let next = 0;
-        if (tokens > 0) {
-          /* 向下对齐到「不大于请求值」的档；窗口未知时按原值记。 */
-          next = tiers.length > 0 ? tierAtMost(tiers, tokens) : Math.floor(tokens);
+        /* 向下对齐到「不大于请求值」的档；窗口未知时按原值记。 */
+        const next = tokens > 0 ? alignBudget(tokens, window) : 0;
+        const current = budgetOf(agent?.session);
+        if (next === current && budgetBySession.get(sessionId) !== undefined) {
+          /* 重复设置同一个值：不写状态、不再记一条 host 日志。命令本身的两条
+             生命周期事件由执行器写，客户端已经不会再重复发起。 */
+          return {
+            kind: 'success',
+            text:
+              next > 0
+                ? `上下文预算已经是 ${next} token（窗口 ${window}）；超过 ${Math.floor(next * settings.triggerRatio)} 时，下一步开始前会自动压缩最早的历史 / Budget already ${next} tokens (window ${window})`
+                : '上下文预算本来就没有设置 / No context budget was set',
+          };
         }
         if (next > 0) budgetBySession.set(sessionId, next);
         else budgetBySession.delete(sessionId);
@@ -753,22 +931,51 @@ export function apply(ctx, rawConfig) {
       },
     });
     return () => dispose();
-  }, `[${settings.name}] command`);
+  }, `[${PLUGIN_NAME}] command`);
 
-  /* ---------------------------------------------- 可选：把预算回显给客户端 */
-  /* 客户端主要靠 localStorage 记忆；这里额外提供一个只读查询命令，便于面板
-     在重载后向 Host 确认当前生效值。 */
+  /* ---------------------------------------- 只读状态：客户端挂载时对账用 */
+  /*
+   * 客户端把预算镜像在 localStorage，但 Host 的 Map 才是权威：Host 重启、
+   * 会话被 `agent/disposed` 清理、或配置改了 baseTokens/stepCap 之后，
+   * 本地值都可能与 Host 不一致。客户端在挂载时先调这条命令，用返回的
+   * `budget` 覆盖本地值，并用 `triggerRatio` / `baseTokens` / `stepCap`
+   * 渲染面板与档位 —— 这使得「改配置后 UI 与 Host 分叉」不再发生。
+   * 返回体是 JSON（作为 `result.text` 的字符串），`v` 是协议版本。
+   */
   ctx.effect(() => {
     const dispose = ctx.commands.register({
-      name: `${settings.command}-status`,
-      description: '查询本会话当前生效的上下文预算 / Report this session’s effective context budget.',
+      name: STATUS_COMMAND,
+      description: '查询本会话当前生效的上下文预算与配置 / Report this session’s effective context budget and settings.',
       recordInput: false,
       handler: async (invocation) => {
-        const sessionId = invocation.agent?.session?.id;
-        const budget = sessionId ? budgetBySession.get(sessionId) ?? 0 : 0;
-        return { kind: 'success', text: String(budget) };
+        const agent = invocation.agent;
+        const session = agent?.session ?? null;
+        const budget = budgetOf(session);
+        /* 窗口：`windowOf` 会先读 `session.requestContext()`，没有就现场解析
+           默认/当前路由。客户端只在投影缺席（老 Host 或投影还没注册）时
+           才会退回来问这条命令。 */
+        let window = 0;
+        try {
+          window = await windowOf(agent, invocation.signal);
+        } catch {
+          window = 0;
+        }
+        const payload = {
+          v: 2,
+          budget,
+          window,
+          enabled: settings.enabled,
+          triggerRatio: settings.triggerRatio,
+          targetRatio: settings.targetRatio,
+          baseTokens: settings.baseTokens,
+          stepCap: settings.stepCap,
+          maxAttempts: settings.maxAttempts,
+          minIntervalMs: settings.minIntervalMs,
+          projection: PROJECTION_KEY,
+        };
+        return { kind: 'success', text: JSON.stringify(payload) };
       },
     });
     return () => dispose();
-  }, `[${settings.name}] status command`);
+  }, `[${PLUGIN_NAME}] status command`);
 }

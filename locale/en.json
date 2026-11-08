@@ -11,12 +11,14 @@
   "tier.value": "{tier}",
   "budget.trigger": "Trigger",
   "budget.nextRequest": "Takes effect on the next step",
-  "budget.notGraded": "This model window does not exceed 256K, so no tiers apply",
+  "budget.notGraded": "This model window does not exceed {base}, so no tiers apply",
   "budget.unknownWindow": "Context window not measured yet",
+  "budget.generic": "Window not measured yet — pick a budget from the generic tiers",
+  "budget.estimated": "Window estimated from the last measurement ({window}); it corrects after the first request",
   "budget.failed": "Could not save the budget",
   "trigger.window": "Window",
   "meta": {
     "title": "Context length budget",
-    "description": "Adds a discrete tier slider beside the composer for a per-session context budget; when usage passes 70% of the budget, the oldest history is pruned and compacted before the next step."
+    "description": "Adds a discrete tier slider beside the composer for a per-session context budget; when usage passes the configured trigger ratio, the oldest history is pruned and compacted before the next step. Tiers and trigger ratio follow the host config."
   }
 }

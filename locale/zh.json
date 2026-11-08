@@ -11,12 +11,14 @@
   "tier.value": "{tier}",
   "budget.trigger": "触发点",
   "budget.nextRequest": "下一步请求生效",
-  "budget.notGraded": "当前模型窗口未超过 256K，无需分级",
+  "budget.notGraded": "当前模型窗口未超过 {base}，无需分级",
   "budget.unknownWindow": "尚未测量上下文窗口",
+  "budget.generic": "窗口尚未测量，先按通用档位选择",
+  "budget.estimated": "窗口按上次测量 {window} 估算，首次请求后自动校正",
   "budget.failed": "预算设置失败",
   "trigger.window": "窗口",
   "meta": {
     "title": "上下文长度预算",
-    "description": "输入框旁提供离散档位滑杆，按会话选择上下文预算；超过预算 70% 时，在下一步请求前自动剪枝并压缩最早的历史。"
+    "description": "输入框旁提供离散档位滑杆，按会话选择上下文预算；超过触发比例时，在下一步请求前自动剪枝并压缩最早的历史。档位与触发比例随宿主配置下发。"
   }
 }

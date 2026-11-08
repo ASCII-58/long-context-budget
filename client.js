@@ -1,21 +1,31 @@
 /**
  * 长上下文预算 · Client 半边。
  *
- * 输入框右侧（`conversation.input.right`）放一枚紧凑触发器，显示**当前模型的
- * 上下文窗口容量**（如 `上下文 976.6K`），而不是上下文占用率；点开是一块小浮层，
- * 里面**只有**上下文长度切换件（Claude Code 风格的离散档位滑杆）：
+ * 输入框右侧（`conversation.input.right`）放一枚紧凑触发器，显示**当前生效的
+ * 上下文预算档位**（如 `上下文 640.0K`），而不是窗口容量/占用率；点开是一块小
+ * 浮层，里面**只有**上下文长度切换件（Claude Code 风格的离散档位滑杆）：
  *
- *   预算  整窗                 触发点 70% = 683.6K
+ *   预算  640.0K              触发点 70% = 448.0K   ← 比例由 Host 配置下发
  *   更省                                    更宽
  *   [═════ 26px 圆角轨道 + 每档刻度点 + 16×30 滑块 ═════]
  *   下一步请求生效
  *
- * 数据只有两个权威来源：
- *   - `contextPressure` → `{ contextWindow }`（窗口容量；其余占用字段不再读取）
- *   - `tiers` 由 `contextWindow` 经分级公式推出（与 `tiers.js` 逐字等价）
+ * 数据来源：
+ *   - `contextBudget` 投影 → `{ budget, window, triggerRatio, baseTokens, stepCap }`
+ *     —— Host 把「预算 + 窗口 + 配置」发布成会话投影，正常路径**只读它**，
+ *     不跑 `/context-budget-status`（命令会在聊天记录里留一行，反复对账
+ *     就是用户看到的重复日志）。预算本身也是日志派生的，Host 重启不丢。
+ *   - `contextPressure` 投影 → `{ contextWindow }`：发过请求后的真实窗口，
+ *     优先级最高（比 Host 预解析的默认路由更准）。
+ *   - 窗口的兜底链：`contextPressure` → `contextBudget.window` →
+ *     `/context-budget-status` → 上次实测窗口（localStorage）→ 通用绝对档位。
+ *     最后两级保证「会话开始前/宿主解析失败」时**仍然能设预算**：档位只是
+ *     选值的便利，真实窗口到达后 Host 会把同一预算重新对齐。
+ *   - `/context-budget <token 数>` 命令：**只**在用户改档位时发一次。
  *
- * 纯浏览器模块：React 来自宿主模块表；与 Host 的唯一通道是
- * `/context-budget <token 数>` 命令（`ctx.get('remote.commands')`）。
+ * 纯浏览器模块：React 来自宿主模块表；与 Host 的通道是
+ * `/context-budget` 命令（`ctx.get('remote.commands')`）与会话投影
+ * （`useProjection`）。`/context-budget-status` 仅作为投影缺席时的兜底。
  */
 window.__ModuleLoader__.load({
   id: 'dsh-long-context-budget',
@@ -49,8 +59,43 @@ window.__ModuleLoader__.load({
     const SLOT = 'conversation.input.right';
     const ENTRY_ID = 'long-context-budget';
     const LOCALE_NS = 'long-context-budget';
+    /* Host/Client 固定契约：改这里必须同步改 index.js 的 COMMAND_NAME /
+       STATUS_COMMAND / PROJECTION_KEY（scripts/test-budget-slider.mjs 会做一致性检查）。 */
     const COMMAND_NAME = 'context-budget';
+    const STATUS_COMMAND = `${COMMAND_NAME}-status`;
+    /* 会话投影 key：Host 把「预算 + 窗口 + 配置」发布成客户端可读的投影。
+       正常路径只读它，**不跑** /context-budget-status —— 命令会往聊天记录里
+       写 command/run + command/done 两行，每次挂载都刷正是用户看到的重复日志。 */
+    const PROJECTION_KEY = 'contextBudget';
     const STORAGE_KEY = 'dsh-long-context-budget.budgets';
+    /* 上一次实测到的窗口容量（全局，不按会话）。新会话在首次请求之前宿主
+       还没有真实窗口，面板就一个档位都没有；把上回量到的值记下来，新会话
+       就能立刻出档位，等真实窗口到达再自动校正。 */
+    const WINDOW_STORAGE_KEY = 'dsh-long-context-budget.last-window';
+    /* 投影是 Host 激活后异步注册的（Host 会先等一次默认窗口解析，最多 1.5s）：
+       挂载瞬间 undefined 不代表宿主不支持它。超过这个宽限期还没有投影，才退回
+       命令通道（老 Host），否则每次挂载都会白跑一对命令、在聊天记录里多两行。
+       离线自测可以调小它（`globalThis.__DSH_LCB_PROJECTION_GRACE_MS__`）。 */
+    const PROJECTION_GRACE_OVERRIDE = Number(globalThis.__DSH_LCB_PROJECTION_GRACE_MS__);
+    const PROJECTION_GRACE_MS =
+      Number.isFinite(PROJECTION_GRACE_OVERRIDE) && PROJECTION_GRACE_OVERRIDE >= 0
+        ? PROJECTION_GRACE_OVERRIDE
+        : 4000;
+
+    /* 挂载时向 Host 拉取配置前的兜底值；拿到 status 后整体替换。
+       值必须与 tiers.js 的默认常量一致，但不能引用 BASE_TOKENS/STEP_CAP
+       —— 那两个 const 声明在下面的 tier math 区块里，此处在 TDZ 中。 */
+    const DEFAULT_SETTINGS = {
+      triggerRatio: 0.7,
+      baseTokens: 256 * 1024,
+      stepCap: 128 * 1024,
+    };
+
+    /* 窗口完全未知时的通用绝对档位。
+       档位本该由窗口推出，但「还没量到窗口」不等于「不能设预算」：宿主接受
+       任意 token 数，等真实窗口到达后同一预算会按真实窗口重新对齐。这里刻意
+       给整档位，覆盖常见窗口，而不是假装知道当前模型的窗口。 */
+    const GENERIC_TIERS = Object.freeze([128 * 1024, 256 * 1024, 512 * 1024, 1024 * 1024]);
 
     /* ------------------------------------------------------------ 宿主 hook 适配 */
 
@@ -82,19 +127,19 @@ window.__ModuleLoader__.load({
     const BASE_TOKENS = 256 * K;
     const STEP_CAP = 128 * K;
 
-    function stepTokens(windowTokens) {
-      const over = Math.floor(windowTokens) - BASE_TOKENS;
+    function stepTokens(windowTokens, baseTokens = BASE_TOKENS, cap = STEP_CAP) {
+      const over = Math.floor(windowTokens) - baseTokens;
       if (!(over > 0)) return 0;
-      return Math.min(STEP_CAP, Math.floor(over * 0.5));
+      return Math.min(cap, Math.floor(over * 0.5));
     }
 
-    function computeTiers(windowTokens) {
+    function computeTiers(windowTokens, baseTokens = BASE_TOKENS, cap = STEP_CAP) {
       const total = Number.isFinite(windowTokens) ? Math.floor(windowTokens) : 0;
       if (!(total > 0)) return [];
-      const step = stepTokens(total);
+      const step = stepTokens(total, baseTokens, cap);
       if (step <= 0) return [total];
       const tiers = [];
-      for (let value = BASE_TOKENS; value < total; value += step) tiers.push(value);
+      for (let value = baseTokens; value < total; value += step) tiers.push(value);
       tiers.push(total);
       return tiers;
     }
@@ -139,11 +184,15 @@ window.__ModuleLoader__.load({
      * 数字和面板里的「预算」会对不上（之前底部显示窗口容量就与档位脱节）。
      * 没设预算时默认取最高档 = 整窗。
      */
-    function tierText(tiers, budget, t) {
+    function tierText(tiers, budget, t, generic = false) {
       if (tiers.length === 0) return '—';
+      /* 通用档位只是「可选值」，没选过就还是没设预算 —— 不能把最高档
+         显示成已生效的数字。 */
+      if (generic && !(Number(budget) > 0)) return '—';
       const top = tiers[tiers.length - 1];
       const tier = budget > 0 ? nearestTier(tiers, budget) : top;
-      return tier >= top ? t('tier.full') : t('tier.value', { tier: formatTokens(tier) });
+      /* 通用档位不知道整窗是多少，所以绝不把最高档说成「整窗」。 */
+      return !generic && tier >= top ? t('tier.full') : t('tier.value', { tier: formatTokens(tier) });
     }
 
     /* ------------------------------------------------------------------ locale */
@@ -164,8 +213,10 @@ window.__ModuleLoader__.load({
         'tier.value': '{tier}',
         'budget.trigger': '触发点',
         'budget.nextRequest': '下一步请求生效',
-        'budget.notGraded': '当前模型窗口未超过 256K，无需分级',
+        'budget.notGraded': '当前模型窗口未超过 {base}，无需分级',
         'budget.unknownWindow': '尚未测量上下文窗口',
+        'budget.generic': '窗口尚未测量，先按通用档位选择',
+        'budget.estimated': '窗口按上次测量 {window} 估算，首次请求后自动校正',
         'budget.failed': '预算设置失败',
         'trigger.window': '窗口',
       },
@@ -182,8 +233,10 @@ window.__ModuleLoader__.load({
         'tier.value': '{tier}',
         'budget.trigger': 'Trigger',
         'budget.nextRequest': 'Takes effect on the next step',
-        'budget.notGraded': 'This model window does not exceed 256K, so no tiers apply',
+        'budget.notGraded': 'This model window does not exceed {base}, so no tiers apply',
         'budget.unknownWindow': 'Context window not measured yet',
+        'budget.generic': 'Window not measured yet — pick a budget from the generic tiers',
+        'budget.estimated': 'Window estimated from the last measurement ({window}); it corrects after the first request',
         'budget.failed': 'Could not save the budget',
         'trigger.window': 'Window',
       },
@@ -346,6 +399,27 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** 上次实测窗口；没有 / 坏值都归一成 0（=「不知道」）。 */
+    function readLastWindow() {
+      try {
+        const raw = globalThis.localStorage?.getItem(WINDOW_STORAGE_KEY);
+        const tokens = Number(raw);
+        return Number.isFinite(tokens) && tokens > 0 ? Math.floor(tokens) : 0;
+      } catch {
+        return 0;
+      }
+    }
+
+    function writeLastWindow(tokens) {
+      const value = Number(tokens);
+      if (!Number.isFinite(value) || value <= 0) return;
+      try {
+        globalThis.localStorage?.setItem(WINDOW_STORAGE_KEY, String(Math.floor(value)));
+      } catch {
+        /* 存不下只是下次还得重新等窗口，不影响本次。 */
+      }
+    }
+
     /* ---------------------------------------------------------------- 投影读取 */
 
     /**
@@ -368,6 +442,12 @@ window.__ModuleLoader__.load({
       const number = finite(value);
       if (number === null || number < 0) return null;
       return number;
+    }
+
+    /** 正数 token 守卫：0 / 缺失 / 负数都归一成 `null`（=「没有这个值」）。 */
+    function positiveTokens(value) {
+      const number = tokenCount(value);
+      return number !== null && number > 0 ? Math.floor(number) : null;
     }
 
     /**
@@ -435,6 +515,109 @@ window.__ModuleLoader__.load({
       return execution;
     }
 
+    /**
+     * 向 Host 查询「当前生效预算 + 窗口 + 配置」。
+     *
+     * 这是**兜底通道**：正常路径读 `PROJECTION_KEY` 投影，不跑命令。只有
+     * 投影缺席（老 Host / 注册失败）或投影还没带窗口时才用一次。
+     *
+     * 返回 `null` 表示通道/命令暂不可用（调用方保留本地值）。兼容两种
+     * 历史返回：v0.2.6 的纯数字预算文本、v0.2.7+ 的 JSON。纯数字**必须**
+     * 解析成预算 —— 曾经因为只认 JSON 对象而返回 null，客户端便把它当成
+     * 「老 Host 不支持查询」，于是又把同一个预算推了一遍，日志里就多出一条
+     * 重复的 `/context-budget 960000`。
+     */
+    async function readStatus(agentId, signal) {
+      const api = commandsApi();
+      if (!api) return null;
+      const response = await api.execute(agentId, `/${STATUS_COMMAND}`, [], signal);
+      if (!response?.ok) throw new Error(String(response?.error?.message ?? response?.error?.code ?? 'status rejected'));
+      const execution = response?.value;
+      const result = execution?.result;
+      if (!execution || result?.kind !== 'success') {
+        throw new Error(String(result?.text ?? 'status command failed'));
+      }
+      const text = String(result.text ?? '').trim();
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = undefined;
+      }
+      const object = parsed && typeof parsed === 'object' ? parsed : null;
+      const numeric = object === null ? Number(text) : NaN;
+      if (object === null && !Number.isFinite(numeric)) return null;
+      const source = object ?? { budget: numeric };
+      const positive = (value) => {
+        const number = Number(value);
+        return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+      };
+      const ratio = (value) => {
+        const number = Number(value);
+        return Number.isFinite(number) && number > 0 && number < 1 ? number : null;
+      };
+      return {
+        /* `legacy`：老 Host 只回了预算数字，其余配置一律缺省。 */
+        legacy: object === null,
+        budget: Math.max(0, Math.floor(Number(source.budget) || 0)),
+        window: positive(source.window),
+        triggerRatio: ratio(source.triggerRatio),
+        baseTokens: positive(source.baseTokens),
+        stepCap: positive(source.stepCap),
+      };
+    }
+
+    /** 把 status 里的配置夹紧成可安全用于渲染的值。 */
+    function normalizeSettings(status) {
+      if (!status) return DEFAULT_SETTINGS;
+      const ratio = (value, fallback) =>
+        Number.isFinite(value) && value > 0 && value < 1 ? value : fallback;
+      const positive = (value, fallback) =>
+        Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+      return {
+        triggerRatio: ratio(status.triggerRatio, DEFAULT_SETTINGS.triggerRatio),
+        baseTokens: positive(status.baseTokens, DEFAULT_SETTINGS.baseTokens),
+        stepCap: positive(status.stepCap, DEFAULT_SETTINGS.stepCap),
+      };
+    }
+
+    /**
+     * 每个页面、每个会话最多问一次 Host 的 status。
+     *
+     * 命令执行一定会在会话日志里留下 `command/run` + `command/done`，也就是
+     * 聊天记录里的一行。之前挂载时无条件对账、失败还退避重试 4 次，
+     * 于是同一份配置/预算被反复查询、反复推送 —— 这正是「重复日志」的成因。
+     * 现在 status 只是投影缺席时的兜底，且同一页面内共享同一个 Promise
+     * （组件重复挂载不会重复发起）。
+     *
+     * @param {string} sessionId 会话 id。
+     * @returns {Promise<object|null>} status；不可用时为 null。
+     */
+    const statusProbe = new Map();
+    /* 已经做过「旧版预算补推」的会话：每个页面每会话只推一次。 */
+    const migrationPushed = new Set();
+    function probeStatus(sessionId) {
+      if (!sessionId) return Promise.resolve(null);
+      const cached = statusProbe.get(sessionId);
+      if (cached) return cached;
+      const run = (async () => {
+        const controller = new AbortController();
+        let attempt = 0;
+        for (;;) {
+          try {
+            const status = await readStatus(sessionId, controller.signal);
+            return status ?? null;
+          } catch {
+            attempt += 1;
+            if (attempt >= 4) return null;
+            await new Promise((resolve) => setTimeout(resolve, 400 * 2 ** attempt));
+          }
+        }
+      })();
+      statusProbe.set(sessionId, run);
+      return run;
+    }
+
     /* ------------------------------------------------------------------ 面板 */
 
     /**
@@ -450,6 +633,9 @@ window.__ModuleLoader__.load({
         busy,
         error,
         contextWindow,
+        generic,
+        estimated,
+        settings,
         onSelectTier,
         onClose,
         panelRef,
@@ -462,7 +648,12 @@ window.__ModuleLoader__.load({
       const topTier = tiers.length > 0 ? tiers[tiers.length - 1] : 0;
       const selectedTier = budget > 0 ? nearestTier(tiers, budget) : topTier;
       const labelForTier = (tier) =>
-        tier >= topTier ? t('tier.full') : t('tier.value', { tier: formatTokens(tier) });
+        !generic && !estimated && tier >= topTier
+          ? t('tier.full')
+          : t('tier.value', { tier: formatTokens(tier) });
+      /* 通用档位 + 还没选过：预算仍然是「未设置」，别让最高档看起来像已生效。 */
+      const unset = generic && !(budget > 0);
+      const notGraded = t('budget.notGraded', { base: formatTokens(settings.baseTokens) });
 
       return h(
         'div',
@@ -496,13 +687,23 @@ window.__ModuleLoader__.load({
           selectedTier,
           gradable,
           busy,
+          unset,
           labelForTier,
           onSelectTier,
+          settings,
         }),
         h(
           'div',
           { className: 'lcb-status' },
-          gradable ? t('budget.nextRequest') : contextWindow === null ? t('budget.unknownWindow') : t('budget.notGraded')
+          generic
+            ? t('budget.generic')
+            : estimated
+              ? t('budget.estimated', { window: formatTokens(contextWindow ?? 0) })
+              : gradable
+                ? t('budget.nextRequest')
+                : contextWindow === null
+                  ? t('budget.unknownWindow')
+                  : notGraded
         ),
         error ? h('div', { className: 'lcb-error', role: 'alert' }, error) : null
       );
@@ -523,7 +724,7 @@ window.__ModuleLoader__.load({
      * 不做连续取值 —— 否则「预算 = 313.7K」这种值没有语义。
      */
     function BudgetSlider(props) {
-      const { strings, tiers, selectedTier, gradable, busy, labelForTier, onSelectTier } = props;
+      const { strings, tiers, selectedTier, gradable, busy, unset, labelForTier, onSelectTier, settings } = props;
       const t = strings.t;
 
       const trackRef = useRef(null);
@@ -737,10 +938,16 @@ window.__ModuleLoader__.load({
 
       const currentIndex = activeIndex >= 0 ? activeIndex : 0;
       const currentTier = count > 0 ? tiers[Math.min(currentIndex, count - 1)] : 0;
-      const valueText = count > 0 ? labelForTier(currentTier) : '—';
-      const metaText =
-        currentTier > 0 && gradable
-          ? `${t('budget.trigger')} 70% = ${formatTokens(Math.floor(currentTier * 0.7))}`
+      /* 拖动时永远显示预览档位（否则拉起来没有反馈）；静止且「未设置」才显示 —。 */
+      const showUnset = unset === true && !(dragging && previewIndex >= 0);
+      const valueText = count > 0 && !showUnset ? labelForTier(currentTier) : '—';
+      /* 触发比例由 Host 通过 status 下发，不能再写死 70%。 */
+      const triggerRatio = settings.triggerRatio;
+      const triggerPercent = `${Math.round(triggerRatio * 100)}%`;
+      const metaText = showUnset
+        ? '—'
+        : currentTier > 0 && gradable
+          ? `${t('budget.trigger')} ${triggerPercent} = ${formatTokens(Math.floor(currentTier * triggerRatio))}`
           : currentTier > 0
             ? formatTokens(currentTier)
             : '—';
@@ -850,6 +1057,17 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false);
       const [error, setError] = useState(null);
       const [strings, setStrings] = useState(() => resolveStrings(null));
+      /* Host 下发的配置。投影正常时配置直接从投影读，这里只在投影缺席（老
+         Host）或窗口兜底查询时被填上。必须放在 open 之后：
+         scripts/test-budget-slider.mjs 依赖前两个 useState（budgets / open）
+         的固定下标来强制面板展开。 */
+      const [fallbackSettings, setFallbackSettings] = useState(DEFAULT_SETTINGS);
+      /* 窗口兜底：投影与 contextPressure 都给不出窗口时（首次请求前且 Host
+         解析失败）用一次 status 查询补上。 */
+      const [fallbackWindow, setFallbackWindow] = useState(0);
+      /* 上次实测窗口（localStorage）。所有实时来源都缺席时用它出档位 ——
+         新会话在首次请求前至少能设预算，而不是整块面板不可用。 */
+      const [cachedWindow, setCachedWindow] = useState(() => readLastWindow());
 
       const rootRef = useRef(null);
       const panelRef = useRef(null);
@@ -893,38 +1111,126 @@ window.__ModuleLoader__.load({
       /* 只读窗口容量这一个投影：其它占用投影不再订阅，避免每次 tool 往返
          都触发重渲染（那正是切档动画卡顿的来源之一）。 */
       const pressure = readProjection(useProjection, 'contextPressure');
-      const contextWindow = contextWindowOf(pressure);
-      const tiers = useMemo(() => computeTiers(contextWindow ?? 0), [contextWindow]);
+      /* Host 发布的权威状态：预算 + 窗口 + 配置。正常路径只读它、不跑命令。 */
+      const projection = readProjection(useProjection, PROJECTION_KEY);
+      const projectionBudget = projection ? tokenCount(projection.budget) : null;
+      const projectionWindow = projection ? positiveTokens(projection.window) : null;
+      /* 配置随投影下发；投影缺席（老 Host）时才用 status 兜底值。 */
+      const settings = projection ? normalizeSettings(projection) : fallbackSettings;
+      /* 窗口优先级：真实测量（`contextPressure`，最可信）→ 投影（首次请求前由
+         Host 解析默认路由）→ 一次性 status 兜底 → 上次实测缓存。任一来源有值，
+         面板就能出档位。 */
+      const measuredWindow = contextWindowOf(pressure) ?? projectionWindow ?? positiveTokens(fallbackWindow);
+      const contextWindow = measuredWindow ?? positiveTokens(cachedWindow);
+      /* 窗口完全未知：退回通用绝对档位（`GENERIC_TIERS`），先把预算设上，
+         真实窗口到达后由 Host 重新对齐。 */
+      const generic = contextWindow === null;
+      /* 窗口来自上次测量（本次还没量到）：档位形状可信，但不是「当前模型窗口」，
+         所以既不把最高档叫「整窗」，也在面板里说明它会自动校正。 */
+      const estimated = !generic && measuredWindow === null;
+      /* 档位用 Host 下发的 baseTokens/stepCap 计算：改配置后 UI 与 Host 不再分叉。 */
+      const tiers = useMemo(
+        () => (generic ? GENERIC_TIERS : computeTiers(contextWindow, settings.baseTokens, settings.stepCap)),
+        [generic, contextWindow, settings.baseTokens, settings.stepCap]
+      );
 
-      /* 预算：本地记忆优先（宿主是权威，但读回来要一次往返）。 */
-      const stored = sessionId ? Number(budgets[sessionId]) : 0;
-      const budget = Number.isFinite(stored) && stored > 0 ? stored : 0;
-
-      /* 挂载时把本地的选择推给宿主：宿主是权威，宿主重启后选择也要跟回来。
-         命令通道刚启动时可能还没就绪，失败要退避重试几次，否则界面显示着
-         预算、宿主却是空的，压缩会静默失效。 */
+      /* 记住实测窗口：下次新会话开在「本周第一条消息」之前时，面板也能立刻出档位。 */
       useEffect(() => {
-        if (!sessionId) return undefined;
-        const value = Number(readLocalBudgets()[sessionId]);
-        if (!Number.isFinite(value) || value <= 0) return undefined;
-        const controller = new AbortController();
-        let timer = 0;
-        let attempt = 0;
-        const push = () => {
-          if (controller.signal.aborted) return;
-          writeBudget(sessionId, value, controller.signal).catch(() => {
-            if (controller.signal.aborted) return;
-            attempt += 1;
-            if (attempt >= 4) return;
-            timer = setTimeout(push, 400 * 2 ** attempt);
+        if (!measuredWindow) return;
+        writeLastWindow(measuredWindow);
+        setCachedWindow((current) => (current === measuredWindow ? current : measuredWindow));
+      }, [measuredWindow]);
+
+      /* 预算：有投影就以投影为准（日志派生，跨重启不丢）；投影缺席时用本地镜像。 */
+      const localBudget = sessionId ? Number(budgets[sessionId]) : 0;
+      const budget = projection
+        ? Math.max(0, projectionBudget ?? 0)
+        : Number.isFinite(localBudget) && localBudget > 0
+          ? localBudget
+          : 0;
+
+      /* 投影是权威：把本地镜像同步过去。首屏（投影还没到）与下次冷启动
+         仍能立刻显示上次的档位，而整个过程不写命令，聊天记录里不会多一行。 */
+      useEffect(() => {
+        if (!sessionId || !projection) return;
+        /* 日志里还没有本命令（`seeded: false`）：投影的 0 不代表「用户没设过」，
+           先别动本地镜像，等迁移把它推回日志。 */
+        if (projection.seeded !== true) return;
+        const value = Math.max(0, projectionBudget ?? 0);
+        const local = readLocalBudgets();
+        const current = Number(local[sessionId]);
+        const hasCurrent = Number.isFinite(current) && current > 0;
+        if (value > 0 ? current === value : !hasCurrent) return;
+        const next = { ...local };
+        if (value > 0) next[sessionId] = value;
+        else delete next[sessionId];
+        writeLocalBudgets(next);
+        setBudgets(next);
+      }, [sessionId, projection, projectionBudget]);
+
+      /* 一次性迁移：v0.2.7 及更早把预算只记在进程内（日志里没有 `args`），
+         升级后投影会是 `seeded: false, budget: 0`。本地镜像还有值时补推一次，
+         让选择回到日志里 —— 只推一次，之后投影的 `seeded` 就变 true 了。 */
+      useEffect(() => {
+        if (!sessionId || !projection || projection.seeded === true) return;
+        if (migrationPushed.has(sessionId)) return;
+        const local = readLocalBudgets();
+        const value = Number(local[sessionId]);
+        if (!Number.isFinite(value) || value <= 0) return;
+        migrationPushed.add(sessionId);
+        void writeBudget(sessionId, Math.floor(value)).catch(() => {
+          /* 推不上去就下次再说：本地镜像还在。 */
+          migrationPushed.delete(sessionId);
+        });
+      }, [sessionId, projection]);
+
+      /* 兜底一：投影迟迟不出现（老 Host / 注册失败）。此时才走命令通道：
+         先把 Host 的权威值拉回来，Host 是空的（重启过）就把本地选择推回去。
+         宽限期用来避开「投影正在异步注册」的那一瞬间。 */
+      useEffect(() => {
+        if (!sessionId || projection !== undefined) return undefined;
+        let active = true;
+        const timer = setTimeout(() => {
+          void probeStatus(sessionId).then((status) => {
+            if (!active || !status) return;
+            setFallbackSettings(normalizeSettings(status));
+            if (status.window > 0) setFallbackWindow(status.window);
+            const local = readLocalBudgets();
+            const localValue = Number(local[sessionId]);
+            const hasLocal = Number.isFinite(localValue) && localValue > 0;
+            const next = { ...local };
+            if (status.budget > 0) next[sessionId] = status.budget;
+            else delete next[sessionId];
+            writeLocalBudgets(next);
+            setBudgets(next);
+            /* Host 空、本地有值：Host 刚重启，把选择推回去（每个页面仅一次）。 */
+            if (status.budget === 0 && hasLocal) {
+              void writeBudget(sessionId, Math.floor(localValue)).catch(() => {});
+            }
           });
-        };
-        push();
+        }, PROJECTION_GRACE_MS);
         return () => {
-          controller.abort();
+          active = false;
           clearTimeout(timer);
         };
-      }, [sessionId]);
+      }, [sessionId, projection]);
+
+      /* 兜底二：打开面板时窗口仍然未知（投影早于默认窗口解析注册、或解析
+         失败）。用一次 status 补上窗口与配置；本页每个会话只问一次。 */
+      useEffect(() => {
+        if (!open || !sessionId || contextWindow !== null) return undefined;
+        let active = true;
+        void probeStatus(sessionId).then((status) => {
+          if (!active || !status) return;
+          setFallbackSettings(normalizeSettings(status));
+          const window = positiveTokens(status.window);
+          if (window) setFallbackWindow(window);
+        });
+        return () => {
+          active = false;
+        };
+      }, [open, sessionId, contextWindow]);
+
 
       const commit = useCallback(
         async (tokens) => {
@@ -1047,7 +1353,7 @@ window.__ModuleLoader__.load({
       /* 底部触发件显示**当前生效档位**，与面板「预算」用同一个函数。
          之前显示窗口容量（937.5K）不随滑杆变，和档位 640.0K 对不上；
          窗口容量改放到 tooltip / aria 里，作为参考信息保留。 */
-      const activeText = tierText(tiers, budget, strings.t);
+      const activeText = tierText(tiers, budget, strings.t, generic || estimated);
       const windowText = contextWindow === null ? null : formatTokens(contextWindow);
       const trigger = h(
         'button',
@@ -1084,10 +1390,13 @@ window.__ModuleLoader__.load({
               panelStyle: position ?? { visibility: 'hidden', left: 0, top: 0 },
               strings,
               contextWindow,
+              generic,
+              estimated,
               tiers,
               budget,
               busy,
               error,
+              settings,
               onSelectTier,
               onClose: close,
             }
