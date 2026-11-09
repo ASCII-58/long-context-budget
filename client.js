@@ -72,6 +72,8 @@ window.__ModuleLoader__.load({
        还没有真实窗口，面板就一个档位都没有；把上回量到的值记下来，新会话
        就能立刻出档位，等真实窗口到达再自动校正。 */
     const WINDOW_STORAGE_KEY = 'dsh-long-context-budget.last-window';
+    /* 面板里「统计基准」的选择：整窗 / 插件软上限。只影响读数，不影响触发。 */
+    const BASIS_STORAGE_KEY = 'dsh-long-context-budget.basis';
     /* 投影是 Host 激活后异步注册的（Host 会先等一次默认窗口解析，最多 1.5s）：
        挂载瞬间 undefined 不代表宿主不支持它。超过这个宽限期还没有投影，才退回
        命令通道（老 Host），否则每次挂载都会白跑一对命令、在聊天记录里多两行。
@@ -211,7 +213,6 @@ window.__ModuleLoader__.load({
         'budget.roomy': '更宽',
         'tier.full': '整窗',
         'tier.value': '{tier}',
-        'budget.trigger': '触发点',
         'budget.nextRequest': '下一步请求生效',
         'budget.notGraded': '当前模型窗口未超过 {base}，无需分级',
         'budget.unknownWindow': '尚未测量上下文窗口',
@@ -219,6 +220,13 @@ window.__ModuleLoader__.load({
         'budget.estimated': '窗口按上次测量 {window} 估算，首次请求后自动校正',
         'budget.failed': '预算设置失败',
         'trigger.window': '窗口',
+        'usage.title': '上下文占用',
+        'usage.basis': '统计基准',
+        'usage.basis.window': '整窗',
+        'usage.basis.budget': '软上限',
+        'usage.line': '占用 ~{used} / {cap}（{percent}%）',
+        'usage.unavailable': '还没有实测占用',
+        'usage.trigger': '触发点 {tier}',
       },
       en: {
         'slot.label': 'Context budget',
@@ -231,7 +239,6 @@ window.__ModuleLoader__.load({
         'budget.roomy': 'Roomier',
         'tier.full': 'Full window',
         'tier.value': '{tier}',
-        'budget.trigger': 'Trigger',
         'budget.nextRequest': 'Takes effect on the next step',
         'budget.notGraded': 'This model window does not exceed {base}, so no tiers apply',
         'budget.unknownWindow': 'Context window not measured yet',
@@ -239,6 +246,13 @@ window.__ModuleLoader__.load({
         'budget.estimated': 'Window estimated from the last measurement ({window}); it corrects after the first request',
         'budget.failed': 'Could not save the budget',
         'trigger.window': 'Window',
+        'usage.title': 'Context usage',
+        'usage.basis': 'Measured against',
+        'usage.basis.window': 'Full window',
+        'usage.basis.budget': 'Soft cap',
+        'usage.line': 'Using ~{used} / {cap} ({percent}%)',
+        'usage.unavailable': 'No measured usage yet',
+        'usage.trigger': 'Trigger at {tier}',
       },
     };
 
@@ -363,6 +377,24 @@ window.__ModuleLoader__.load({
 .lcb-slider-track:focus-visible{outline:2px solid var(--lcb-accent);outline-offset:1px;border-radius:10px}
 .lcb-status{margin-top:6px;color:var(--dsw-alias-label-tertiary,#8b929c)}
 .lcb-error{margin-top:6px;color:var(--dsw-alias-state-error-primary,#ef4444)}
+/* 占用读数 + 统计基准切换（右上角）。 */
+.lcb-basis{flex:none;margin-left:auto;border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.12));background:0 0;color:var(--dsw-alias-label-tertiary,#8b929c);cursor:pointer;font:inherit;font-size:11px;line-height:16px;padding:0 7px;border-radius:999px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.lcb-basis:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}
+.lcb-basis:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-brand-primary,#3b82f6)}
+.lcb-basis[data-basis="budget"]{color:var(--dsw-alias-brand-primary,#d97757);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary,#d97757) 45%,transparent)}
+.lcb-close{margin-left:0}
+.lcb-usage{margin:0 0 10px;display:flex;flex-direction:column;gap:4px}
+.lcb-usage-head{display:flex;align-items:baseline;gap:8px}
+.lcb-usage-title{color:var(--dsw-alias-label-tertiary,#8b929c)}
+.lcb-usage-line{margin-left:auto;color:var(--dsw-alias-label-primary,#e6e8eb);font-variant-numeric:tabular-nums}
+.lcb-usage-bar{position:relative;height:4px;border-radius:999px;background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.08))}
+.lcb-usage-fill{height:100%;border-radius:999px;background:var(--dsw-static-blue-450,#3b82f6);transition:width .2s ease,background .2s ease}
+.lcb-usage-fill[data-triggered="1"]{background:var(--dsw-alias-state-warning-primary,#f59e0b)}
+.lcb-usage-fill[data-over="1"]{background:var(--dsw-alias-state-error-primary,#ef4444)}
+/* 触发点：占用条上的一个点；悬停显示触发长度，越过触发线后变红。 */
+.lcb-usage-marker{position:absolute;top:50%;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:999px;background:var(--dsw-alias-label-tertiary,#8b929c);box-shadow:0 0 0 1.5px var(--dsw-alias-bg-elevated,var(--dsw-alias-bg-l1,#1f2126));cursor:help}
+.lcb-usage-marker[data-triggered="1"]{background:var(--dsw-alias-state-error-primary,#ef4444)}
+.lcb-usage-note{color:var(--dsw-alias-label-tertiary,#8b929c)}
 /* 档位文案切换：按方向滑入并轻微模糊，和滑块一起构成「换挡」的手感。 */
 @keyframes lcb-value-swap{from{opacity:.35;transform:translateY(calc(6px * var(--lcb-swap-dir,1)));filter:blur(3px)}to{opacity:1;transform:translateY(0);filter:blur(0)}}
 .lcb-slider-value{animation:lcb-value-swap var(--lcb-duration-move) var(--lcb-ease-glide) both}
@@ -420,6 +452,24 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** 面板「统计基准」：`window` = 整窗容量，`budget` = 插件软上限（默认）。 */
+    function readBasis() {
+      try {
+        const raw = globalThis.localStorage?.getItem(BASIS_STORAGE_KEY);
+        return raw === 'window' ? 'window' : 'budget';
+      } catch {
+        return 'budget';
+      }
+    }
+
+    function writeBasis(basis) {
+      try {
+        globalThis.localStorage?.setItem(BASIS_STORAGE_KEY, basis === 'budget' ? 'budget' : 'window');
+      } catch {
+        /* 存不下只是下次回到默认口径。 */
+      }
+    }
+
     /* ---------------------------------------------------------------- 投影读取 */
 
     /**
@@ -457,6 +507,17 @@ window.__ModuleLoader__.load({
     function contextWindowOf(pressure) {
       const window = tokenCount(pressure?.contextWindow);
       return window !== null && window > 0 ? window : null;
+    }
+
+    /**
+     * 当前上下文占用（真实提示词口径）。
+     *
+     * 优先 `projectedTokens`（最近一次 provider 采样 + 之后的 surface 增量），
+     * 没有就退回 `pressureTokens`（最近一次请求的提示词大小）。
+     */
+    function contextUsedOf(pressure) {
+      const used = tokenCount(pressure?.projectedTokens) ?? tokenCount(pressure?.pressureTokens);
+      return used !== null && used > 0 ? used : null;
     }
 
     /* -------------------------------------------------------------- 命令通道 */
@@ -636,6 +697,9 @@ window.__ModuleLoader__.load({
         generic,
         estimated,
         settings,
+        usage,
+        basis,
+        onBasisChange,
         onSelectTier,
         onClose,
         panelRef,
@@ -655,6 +719,33 @@ window.__ModuleLoader__.load({
       const unset = generic && !(budget > 0);
       const notGraded = t('budget.notGraded', { base: formatTokens(settings.baseTokens) });
 
+      /*
+       * 占用读数：分母跟随右上角的统计基准。
+       * `window` = 模型真实窗口；`budget` = 本插件设的软上限（没设就退回窗口）。
+       */
+      const used = usage && Number.isFinite(usage.used) ? Math.max(0, Math.floor(usage.used)) : null;
+      const cap =
+        basis === 'budget' && budget > 0
+          ? budget
+          : contextWindow !== null && contextWindow > 0
+            ? contextWindow
+            : budget > 0
+              ? budget
+              : null;
+      const percent = used !== null && cap !== null && cap > 0 ? Math.round((used / cap) * 100) : null;
+      const over = percent !== null && percent > 100;
+      /* 触发点画在占用条里：位置按同一分母（整窗 / 软上限）换算，越线变色。 */
+      const triggerRatio = Number(settings.triggerRatio);
+      const triggerAt =
+        budget > 0 && Number.isFinite(triggerRatio) && triggerRatio > 0
+          ? Math.floor(budget * triggerRatio)
+          : null;
+      const triggered = used !== null && triggerAt !== null && used >= triggerAt;
+      const triggerPos =
+        triggerAt !== null && cap !== null && cap > 0
+          ? Math.min(100, Math.max(0, (triggerAt / cap) * 100))
+          : null;
+
       return h(
         'div',
         {
@@ -673,12 +764,74 @@ window.__ModuleLoader__.load({
             'button',
             {
               type: 'button',
+              className: 'lcb-basis',
+              'data-basis': basis,
+              'aria-label': `${t('usage.basis')}：${basis === 'budget' ? t('usage.basis.budget') : t('usage.basis.window')}`,
+              title: t('usage.basis'),
+              onClick: () => onBasisChange(basis === 'budget' ? 'window' : 'budget'),
+            },
+            basis === 'budget' ? t('usage.basis.budget') : t('usage.basis.window')
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
               className: 'lcb-close',
               'aria-label': t('panel.close'),
               title: t('panel.close'),
               onClick: onClose,
             },
             '✕'
+          )
+        ),
+        h(
+          'div',
+          { className: 'lcb-usage' },
+          h(
+            'div',
+            { className: 'lcb-usage-head' },
+            h('span', { className: 'lcb-usage-title' }, t('usage.title')),
+            h(
+              'span',
+              { className: 'lcb-usage-line' },
+              used !== null && cap !== null && percent !== null
+                ? t('usage.line', {
+                    used: formatTokens(used),
+                    cap: formatTokens(cap),
+                    percent: String(percent),
+                  })
+                : t('usage.unavailable')
+            )
+          ),
+          percent !== null
+            ? h(
+                'div',
+                { className: 'lcb-usage-bar' },
+                h('div', {
+                  className: 'lcb-usage-fill',
+                  'data-over': over ? '1' : undefined,
+                  'data-triggered': triggered ? '1' : undefined,
+                  style: { width: `${Math.min(100, Math.max(0, percent))}%` },
+                }),
+                triggerPos !== null
+                  ? h('span', {
+                      className: 'lcb-usage-marker',
+                      'data-triggered': triggered ? '1' : undefined,
+                      style: { left: `${triggerPos}%` },
+                      title: t('usage.trigger', { tier: formatTokens(triggerAt) }),
+                      'aria-label': t('usage.trigger', { tier: formatTokens(triggerAt) }),
+                    })
+                  : null
+              )
+            : null,
+          h(
+            'div',
+            { className: 'lcb-usage-note' },
+            basis === 'budget' && budget > 0
+              ? `${t('usage.basis')}：${t('usage.basis.budget')} ${formatTokens(budget)}`
+              : contextWindow !== null
+                ? `${t('usage.basis')}：${t('usage.basis.window')} ${formatTokens(contextWindow)}`
+                : ''
           )
         ),
         h(BudgetSlider, {
@@ -713,7 +866,7 @@ window.__ModuleLoader__.load({
      * 预算切换件：Claude Code 风格的滑杆。
      *
      * 参照 `dsh-claude-style` 的「推理等级」控件结构（它自己没有开放扩展点，
-     * 只能照着复刻，不能直接借用它的组件）：头部一行「预算 + 当前档 + 触发点」，
+     * 只能照着复刻，不能直接借用它的组件）：头部一行「预算 + 当前档」，
      * 两端语义「更省 / 更宽」，下面一条 26px 圆角轨道 —— 左侧填充、每档一个
      * 刻度点、16×30 的圆角滑块。交互按原生 range 的习惯来：
      *   - 指针按下即取最近档，拖动实时预览，松手才 commit（一次命令往返）；
@@ -941,16 +1094,6 @@ window.__ModuleLoader__.load({
       /* 拖动时永远显示预览档位（否则拉起来没有反馈）；静止且「未设置」才显示 —。 */
       const showUnset = unset === true && !(dragging && previewIndex >= 0);
       const valueText = count > 0 && !showUnset ? labelForTier(currentTier) : '—';
-      /* 触发比例由 Host 通过 status 下发，不能再写死 70%。 */
-      const triggerRatio = settings.triggerRatio;
-      const triggerPercent = `${Math.round(triggerRatio * 100)}%`;
-      const metaText = showUnset
-        ? '—'
-        : currentTier > 0 && gradable
-          ? `${t('budget.trigger')} ${triggerPercent} = ${formatTokens(Math.floor(currentTier * triggerRatio))}`
-          : currentTier > 0
-            ? formatTokens(currentTier)
-            : '—';
 
       const ticks = [];
       if (count > 1 && span > 0) {
@@ -986,7 +1129,6 @@ window.__ModuleLoader__.load({
             },
             valueText
           ),
-          h('span', { className: 'lcb-slider-meta' }, metaText)
         ),
         h(
           'div',
@@ -1068,6 +1210,8 @@ window.__ModuleLoader__.load({
       /* 上次实测窗口（localStorage）。所有实时来源都缺席时用它出档位 ——
          新会话在首次请求前至少能设预算，而不是整块面板不可用。 */
       const [cachedWindow, setCachedWindow] = useState(() => readLastWindow());
+      /* 统计基准：整窗 / 插件软上限。只影响读数，不影响触发。 */
+      const [basis, setBasis] = useState(() => readBasis());
 
       const rootRef = useRef(null);
       const panelRef = useRef(null);
@@ -1184,6 +1328,20 @@ window.__ModuleLoader__.load({
         });
       }, [sessionId, projection]);
 
+      /* 按模型记忆：本会话日志里还没设过预算时，自动套用该模型上次设的值。
+         用户主动取消（设 0）会删掉该模型的记忆，之后不会再自动套用。 */
+      const rememberedBudget = projection ? positiveTokens(projection.modelBudget) : 0;
+      useEffect(() => {
+        if (!sessionId || !projection || projection.seeded === true) return;
+        if (rememberedBudget <= 0) return;
+        if (migrationPushed.has(sessionId)) return;
+        migrationPushed.add(sessionId);
+        void writeBudget(sessionId, rememberedBudget).catch(() => {
+          /* 推不上去就下次再说。 */
+          migrationPushed.delete(sessionId);
+        });
+      }, [sessionId, projection, rememberedBudget]);
+
       /* 兜底一：投影迟迟不出现（老 Host / 注册失败）。此时才走命令通道：
          先把 Host 的权威值拉回来，Host 是空的（重启过）就把本地选择推回去。
          宽限期用来避开「投影正在异步注册」的那一瞬间。 */
@@ -1230,6 +1388,14 @@ window.__ModuleLoader__.load({
           active = false;
         };
       }, [open, sessionId, contextWindow]);
+
+      const changeBasis = useCallback((next) => {
+        const value = next === 'budget' ? 'budget' : 'window';
+        writeBasis(value);
+        setBasis(value);
+      }, []);
+
+      const usage = useMemo(() => ({ used: contextUsedOf(pressure) }), [pressure]);
 
 
       const commit = useCallback(
@@ -1397,6 +1563,9 @@ window.__ModuleLoader__.load({
               busy,
               error,
               settings,
+              usage,
+              basis,
+              onBasisChange: changeBasis,
               onSelectTier,
               onClose: close,
             }

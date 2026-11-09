@@ -7,16 +7,20 @@
 [![DSH](https://img.shields.io/badge/DSH-%3E%3D0.2.0%20%3C0.3.0-3b82f6)](https://github.com/deepseek-ai/deepseek-harness)
 [![GitHub](https://img.shields.io/github/stars/ASCII-58/long-context-budget?logo=github)](https://github.com/ASCII-58/long-context-budget)
 
-> 一个发布在 npm 上的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）插件：在输入框旁提供**按会话的上下文预算**。选好预算档位后，一旦上下文超过它，最早的历史会在**下一步开始前**被剪枝并压缩，让每次请求都落在预算之内，且不打断会话。
+> 一个发布在 npm 上的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）插件：在输入框旁提供**按会话的上下文预算**。选好档位后，一旦上下文超过触发点，最早的历史会在**下一步开始前**被剪枝并压缩；预算按模型跨会话记住，面板里还能看到实时占用与压缩触发点。
 
 ---
 
 ## 功能
 
-- **输入框控件** —— 在 `conversation.input.right` 注入一个紧凑触发件和 Claude Code 风格的离散档位滑杆：拖动连续跟手、靠近刻度磁性吸附，档位文案按方向滑入并轻微模糊。
-- **预算执行** —— 每次 `agent/pre-step` 前，若整包上下文超过 `triggerRatio × 预算`，先做零成本的 tool-result 剪枝；仍不够才调用宿主压缩，把最旧的历史压向 `targetRatio × 预算`。
-- **离散档位** —— 档位由模型窗口按 `min(128K, (W − 256K) × 0.5)` 推出，最后一级是整窗；窗口不超过 256K 时无需分级。
-- **首次请求前就能设** —— 会话刚建、窗口还没量到时也能选档：窗口依次退到「投影 → `/context-budget-status` → 上次实测窗口 → 通用档位 `128K/256K/512K/1M`」，真实窗口到达后由 Host 自动重新对齐。
+- **离散档位滑杆** —— 在 `conversation.input.right` 注入紧凑触发件和 Claude Code 风格的滑杆：连续拖动、磁性吸附、档位文案按方向滑入。档位由模型窗口按 `min(128K, (W − 256K) × 0.5)` 推出，最后一级是整窗；窗口不超过 256K 时无需分级。
+- **下一步开始前压缩** —— 每次 `agent/pre-step` 前检查整包上下文：超过 `triggerRatio × 预算` 先做零成本 tool-result 剪枝，仍超标才调用宿主压缩事务，把最旧的历史压向 `targetRatio × 预算`（尾部另有 64K 下限）。任何异常都只记日志，绝不打断会话。
+- **真实口径判定** —— 触发取「provider 上报的提示词大小」与本地估算的较大值。宿主的 `chars / 4` 启发式对中文偏小，只看它会漏触发；压缩缩掉的量会从提供方快照里扣除，避免同一轮反复压。
+- **按模型记住预算** —— 你在某个模型上设过的预算记在 `~/.dsh/long-context-budget-models.json`；同模型的新会话自动套用，设成 0 即取消该模型的记忆。只记设置值，不含用量统计。
+- **首次请求前就能设** —— 窗口还没量到时也能选档：窗口依次退到「投影 → `/context-budget-status` → 上次实测窗口 → 通用档位 `128K/256K/512K/1M`」，真实窗口到达后由 Host 自动重新对齐。
+- **上下文占用读数** —— 面板显示当前计入、占比与占用条；标题栏右上角一键在「整窗 / 软上限」之间切换统计基准（默认软上限，选择记在 `localStorage`），只改读数，不改触发行为。
+- **占用条上的触发点** —— 触发点不单独成行，而是占用条上的一个圆点：位置按当前统计基准换算，悬停显示触发长度；越过时填充变琥珀色、圆点变红，超过 100% 时保持红色。
+- **状态诊断** —— `/context-budget-status` 返回 v3：`lastDecision` 说明某一步为什么压 / 没压，`model` / `modelBudget` 报出当前模型记住的预算。
 - **按需启用** —— 未设置预算时插件完全不介入。
 - **中英双语界面** —— 内置中英文词条与兜底词典。
 
@@ -67,21 +71,22 @@ dsh plugin --profile web add dsh-long-context-budget
 ## 快速使用
 
 1. 点击输入框右侧的 **上下文（Context）** 触发件。
-2. 在滑杆上选择档位（更省 → 更宽 → 整窗）。面板同时显示当前触发比例（默认 70%，随配置变化）对应的触发点，并提示改动在下一步生效。
-3. 正常对话即可。每一步开始前，Host 会检查整包上下文，只在超出预算时压缩。最高档等于「不额外限制」。
+2. 面板上半部是**上下文占用**：当前计入 / 占比 / 占用条，圆点是压缩触发点（悬停可见具体长度）；右上角按钮切换「整窗 / 软上限」统计基准。
+3. 下半部是**预算滑杆**：拖动选档（更省 → 更宽 → 整窗），改动在下一步生效。最高档等于「不额外限制」。
+4. 正常对话即可。每一步开始前，Host 只在超出触发点时压缩。同一个模型下次开新会话会自动套用上次设的预算。
 
 > 会话刚开始、还没量到窗口时，滑杆不会变灰：它先给出通用档位
 > （128K / 256K / 512K / 1M），面板脚注会说明窗口是估算的（或尚未测量）；
 > 第一次请求完成后自动换成当前模型的真实档位与整窗。
-> 已知一个前提：**Host 半边只在 DSH 启动时加载**，升级插件或改 `index.js`
-> 后必须重启 DSH，否则仍会跑旧代码。
+>
+> **Host 半边只在 DSH 启动时加载**：升级插件或改 `index.js` 后必须重启 DSH，否则仍会跑旧代码。Client 半边刷新页面（或 HMR）即可。
 
 所选档位通过 `/context-budget` 命令送到 Host，也可以直接使用命令：
 
 ```text
 /context-budget 655360     # 请求 640K；Host 会向下对齐到不超过它的最大档（1M 窗口下为 640K）
-/context-budget 0          # 取消当前会话的预算
-/context-budget-status     # 调试用：返回当前生效预算、窗口与下发给 UI 的配置（JSON）
+/context-budget 0          # 取消当前会话的预算，并清除该模型的记忆
+/context-budget-status     # 调试用：返回生效预算、窗口、配置、上一次判定与模型记忆（JSON v3）
 ```
 
 > 命令名 `context-budget` / `context-budget-status` 与投影 key `contextBudget`
@@ -89,10 +94,12 @@ dsh plugin --profile web add dsh-long-context-budget
 > 也无法在运行时发现它们。预算值会向下对齐到分级档位，因此命令里写的数字
 > 不一定是最终生效值。
 >
-> **面板平时不跑命令。** 预算、上下文窗口和配置都由 Host 发布成会话投影
-> `contextBudget`，客户端直接读投影 —— 每次挂载都调一次 status 会在聊天记录里
-> 留下一行（`command/run` + `command/done`），那正是「重复日志」的来源。
-> `context-budget-status` 只在投影缺席（老 Host / 注册失败）或调试时使用。
+> **面板平时不跑命令。** 预算、窗口、配置、模型身份与记忆都由 Host 发布成会话投影
+> `contextBudget`，客户端直接读投影；每次挂载都调 status 会在聊天记录里留一行
+> （`command/run` + `command/done`），那正是「重复日志」的来源。唯一的例外是
+> **同模型的新会话**：为了把记住的预算写进会话日志，挂载时补发一次
+> `/context-budget`（之后仍走投影）。`context-budget-status` 只在投影缺席
+> （老 Host / 注册失败）或调试时使用。
 
 ## 配置项
 
@@ -120,10 +127,16 @@ dsh plugin --profile web add dsh-long-context-budget
         maxAttempts: 3
 ```
 
+环境变量（仅 Host 进程）：
+
+| 变量 | 说明 |
+| --- | --- |
+| `DSH_LCB_MODELS_FILE` | 覆盖按模型预算记忆文件的路径（默认 `~/.dsh/long-context-budget-models.json`）。 |
+
 ## 工作原理
 
-- **Host 半边**（`index.js`）—— 把每个会话的预算折进**会话投影 `contextBudget`**：预算来自 `/context-budget` 命令写进日志的 `command/run.args`，窗口来自 `request/context` 事件；首次请求之前，窗口由 Host 在激活时解析默认路由（`agentDefaultModel` + `llm.resolveModelInfo`，带服务就绪重试），解析不出来则退到本进程里已经量到过的窗口。它以 `prepend` 挂到 `agent/pre-step`，抢在宿主自带的 `compaction-basic` 之前执行；压缩复用宿主的压缩事务，而不是另写一套。任何异常都只记日志并继续当前步骤 —— 压缩是优化，绝不能阻塞对话。预算是日志派生的，Host 重启后照样恢复。
-- **Client 半边**（`client.js`）—— 单文件浏览器模块（不能使用相对导入），渲染进 `conversation.input.right`。它读 `contextBudget` 投影拿预算 / 窗口 / 配置（窗口另以 `contextPressure` 的真实测量优先），用 `baseTokens / stepCap` 推导档位；窗口依次退到「投影 → `/context-budget-status` → 上次实测缓存（localStorage）→ 通用绝对档位」，所以**首次请求之前也能先设预算**，真实窗口到达后再由 Host 对齐。它**只在用户改档位时**发一次 `/context-budget` 命令，挂载阶段不产生任何命令与聊天记录行。投影缺席（老 Host）时才退回 `/context-budget-status` 兜底，且同一页面每个会话最多问一次。
+- **Host 半边**（`index.js`）—— 把每个会话的预算折进**会话投影 `contextBudget`**：预算来自 `/context-budget` 命令写进日志的 `command/run.args`，窗口来自 `request/context` 事件，模型身份（`provider` / `model`）也一并折入，并用它带出该模型记住的预算 `modelBudget`。首次请求之前，窗口由 Host 在激活时解析默认路由（`agentDefaultModel` + `llm.resolveModelInfo`，带服务就绪重试），解析不出来则退到本进程里已经量到过的窗口。它以 `prepend` 挂到 `agent/pre-step`，抢在宿主自带的 `compaction-basic` 之前执行；触发判定取 `contextPressure.pressureTokens` 与 `tokenMeter.measure()` 的较大值，压缩复用宿主的压缩事务，而不是另写一套。按模型预算记在独立 JSON 文件、节流落盘，损坏也不影响会话。
+- **Client 半边**（`client.js`）—— 单文件浏览器模块（不能使用相对导入），渲染进 `conversation.input.right`。它读 `contextBudget` 投影拿预算 / 窗口 / 配置 / 模型身份（窗口另以 `contextPressure` 的真实测量优先），用 `baseTokens / stepCap` 推导档位；窗口依次退到「投影 → `/context-budget-status` → 上次实测缓存（localStorage）→ 通用绝对档位」，所以**首次请求之前也能先设预算**。它读 `contextPressure.projectedTokens ?? pressureTokens` 显示占用，圆点标出 `triggerRatio × budget`，越过触发点变色。统计基准（整窗 / 软上限）只影响分母，选择存 `localStorage`。投影缺席（老 Host）时才退回 `/context-budget-status` 兜底，且同一页面每个会话最多问一次。
 - **分级数学**（`tiers.js`）—— 唯一规范实现，两个纯函数都接受可选的 `baseTokens / stepCap`。`client.js` 保留一份逐字相同的副本；`scripts/check-tier-math.mjs` 会在默认与两组自定义配置下，对一批窗口逐一比对两份实现。
 
 设上下文窗口为 `W`：
@@ -138,12 +151,13 @@ dsh plugin --profile web add dsh-long-context-budget
 
 | 路径 | 说明 |
 | --- | --- |
-| `index.js` | Host 半边：`contextBudget` 会话投影、`agent/pre-step` 执行、`/context-budget` 命令、Config 模式 |
-| `client.js` | Client 半边：触发件、预算滑杆、投影读取与命令通道 |
+| `index.js` | Host 半边：`contextBudget` 会话投影、`agent/pre-step` 执行、按模型预算记忆、`/context-budget` 命令、Config 模式 |
+| `client.js` | Client 半边：触发件、占用读数与触发点、预算滑杆、投影读取与命令通道 |
 | `tiers.js` | 分级数学规范实现 |
 | `cordis.patch.yml` | 插件注册补丁，由 `dsh.bundle.patch` 引用 |
 | `locale/zh.json`、`locale/en.json` | `long-context-budget` locale 命名空间的中英词条 |
 | `icon.svg` | 插件图标 |
+| `CHANGELOG.md` | 更新日志（只写功能） |
 | `scripts/` | 分级数学校验、pre-step 钩子测试、滑杆测试、客户端挂载测试，以及本地调试探针 |
 
 ### 导出
@@ -159,8 +173,8 @@ dsh plugin --profile web add dsh-long-context-budget
 
 ```bash
 node scripts/check-tier-math.mjs        # 校验 Host 与 Client 两份分级公式一致
-node scripts/test-pre-step-hook.mjs     # 验证 pre-step 预算执行逻辑
-node scripts/test-budget-slider.mjs     # 验证预算滑杆渲染与交互（含首次请求前读投影）
+node scripts/test-pre-step-hook.mjs     # 验证 pre-step 预算执行逻辑与真实口径触发
+node scripts/test-budget-slider.mjs     # 验证滑杆 / 占用条 / 触发点渲染与投影路径
 node scripts/test-client-projection.mjs # 验证挂载不发命令、老 Host 兼容与旧预算迁移
 ```
 
@@ -179,17 +193,13 @@ node scripts/test-client-projection.mjs # 验证挂载不发命令、老 Host �
 - 宿主跟随当前界面语言（中文 → `zh`，其它语言 → `en`）。
 - Host 侧的命令提示与 Config 描述采用中英双语，任何语言下都可读。
 
-## 更新记录
+## 更新日志
 
-### 0.2.9
+完整更新日志见 [CHANGELOG.md](CHANGELOG.md)（只写功能）。最近一版摘要：
 
-- **按会话的上下文预算** —— 在输入框右侧为当前会话选一个预算；不设预算时插件完全不介入。
-- **档位滑杆** —— 档位由模型窗口按 `min(128K, (W − 256K) × 0.5)` 推出，最后一级是整窗；连续拖动、靠近刻度磁性吸附、档位文案按方向滑入。窗口不超过 256K 时无需分级。
-- **首次请求之前就能设** —— 窗口还没量到时也给出可选档位（128K / 256K / 512K / 1M），并标明是估算值；第一次请求完成后自动换成当前模型的真实档位。
-- **下一步开始前压缩** —— 上下文一旦超过触发比例（默认 70%），先做零成本 tool-result 剪枝，仍然超标才把最早的历史压向目标比例（默认 50%），全程不打断会话。
-- **配置随宿主下发** —— `triggerRatio` / `targetRatio` / `baseTokens` / `stepCap` / `maxAttempts` / `minIntervalMs` 可调，档位、触发比例与触发点跟着变。
-- **面板不刷聊天记录** —— 预算、窗口与配置通过会话投影 `contextBudget` 下发，面板挂载不执行任何命令；预算从会话日志派生，Host 重启后自动恢复。
-- **中英双语界面** —— 内置中英文词条，缺词条时退回内置词典。
+- **0.2.11** —— 真实口径触发、按模型记住预算、状态诊断（v3）、上下文占用读数与统计基准切换、占用条上的触发点圆点、面板布局调整。
+- **0.2.10** —— README 拆成中英两份。
+- **0.2.9** —— 按会话预算、档位滑杆、首次请求前可设、下一步开始前压缩、配置随宿主下发、面板不刷聊天记录、中英双语界面。
 
 ## 链接
 

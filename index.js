@@ -66,6 +66,9 @@
  * 它是唯一来源，而且 `agent/disposed` 清理也以它为准。
  */
 
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import Schema from '@deepseek-ai/schemastery';
 import { BASE_TOKENS, STEP_CAP, computeTiers } from './tiers.js';
 
@@ -88,6 +91,123 @@ const STATUS_COMMAND = `${COMMAND_NAME}-status`;
  */
 const PROJECTION_KEY = 'contextBudget';
 const PLUGIN_NAME = 'long-context-budget';
+
+/* ------------------------------------------------------------------ 记录 */
+
+/**
+ * 跨会话的「按模型记住的预算」文件。
+ *
+ * 会话投影只能描述**一条**会话，而「这个模型上次设了多少」是跨会话的事实，
+ * 只能由 Host 自己维护。放在 DSH 数据目录下（`$DSH_HOME` 或 `~/.dsh`），
+ * 与会话日志分开，损坏也不影响会话本身。
+ */
+const MODEL_BUDGET_FILE =
+  process.env.DSH_LCB_MODELS_FILE && process.env.DSH_LCB_MODELS_FILE.length > 0
+    ? process.env.DSH_LCB_MODELS_FILE
+    : join(
+        process.env.DSH_HOME && process.env.DSH_HOME.length > 0 ? process.env.DSH_HOME : join(homedir(), '.dsh'),
+        'long-context-budget-models.json',
+      );
+/** 只保留最近这么多个模型，避免文件随模型列表无限增长。 */
+const MODEL_BUDGET_LIMIT = 64;
+/** 落盘节流：连续设预算不会每次都写盘。 */
+const MODEL_BUDGET_FLUSH_MS = 1500;
+
+/**
+ * `provider/model` → `{ budget, window, at }`：这个模型上次设的预算。
+ *
+ * 只记「设过多少」，不记用量统计；`budget = 0` 表示用户明确取消过，
+ * 直接把该模型从表里删掉，下次不会再自动套用。
+ */
+const budgetByModel = new Map();
+/** 每个会话最近一次判定的快照，供 `/context-budget-status` 诊断。 */
+const lastDecisionBySession = new Map();
+let modelBudgetFlushTimer = null;
+
+/** 模型键：provider 缺失记成 `?`；模型名缺失返回 null（不记）。 */
+function modelKeyOf(provider, model) {
+  const name = typeof model === 'string' ? model.trim() : '';
+  if (name.length === 0) return null;
+  const vendor = typeof provider === 'string' && provider.trim().length > 0 ? provider.trim() : '?';
+  return `${vendor}/${name}`;
+}
+
+/** 从磁盘恢复按模型预算；文件不存在/损坏都当作空记录，绝不抛错。 */
+function loadModelBudgets() {
+  try {
+    const parsed = JSON.parse(readFileSync(MODEL_BUDGET_FILE, 'utf8'));
+    const models = parsed && typeof parsed === 'object' ? parsed.models : null;
+    if (!models || typeof models !== 'object') return;
+    for (const [key, value] of Object.entries(models)) {
+      if (typeof key !== 'string' || !value || typeof value !== 'object') continue;
+      const number = (raw) => {
+        const parsedNumber = Math.floor(Number(raw));
+        return Number.isFinite(parsedNumber) && parsedNumber > 0 ? parsedNumber : 0;
+      };
+      const budget = number(value.budget);
+      if (budget <= 0) continue;
+      budgetByModel.set(key, { budget, window: number(value.window), at: number(value.at) });
+    }
+  } catch {
+    /* 首次运行、文件被删、JSON 坏掉：都从空记录开始。 */
+  }
+}
+
+/** 把按模型预算同步写盘（调用方负责节流）。 */
+function flushModelBudgets() {
+  modelBudgetFlushTimer = null;
+  try {
+    const models = {};
+    for (const [key, value] of budgetByModel) models[key] = value;
+    mkdirSync(dirname(MODEL_BUDGET_FILE), { recursive: true });
+    writeFileSync(MODEL_BUDGET_FILE, `${JSON.stringify({ version: 1, models })}\n`, 'utf8');
+  } catch {
+    /* 只读目录、磁盘满：记录功能失效不影响压缩。 */
+  }
+}
+
+/** 安排一次节流写盘。 */
+function scheduleModelBudgetFlush() {
+  if (modelBudgetFlushTimer !== null) return;
+  modelBudgetFlushTimer = setTimeout(flushModelBudgets, MODEL_BUDGET_FLUSH_MS);
+  /* 定时器不能把宿主进程钉住。 */
+  modelBudgetFlushTimer.unref?.();
+}
+
+/**
+ * 记住一个模型设过的预算。
+ *
+ * @param {string} provider 路由 provider。
+ * @param {string} model 路由 model。
+ * @param {number} budget 对齐后的预算；0 = 取消该模型的记忆。
+ * @param {number} window 当时的窗口（0 = 未知）。
+ */
+function recordModelBudget(provider, model, budget, window) {
+  const key = modelKeyOf(provider, model);
+  if (key === null) return;
+  const value = Math.max(0, Math.floor(Number(budget)) || 0);
+  if (value <= 0) {
+    if (budgetByModel.delete(key)) scheduleModelBudgetFlush();
+    return;
+  }
+  budgetByModel.set(key, {
+    budget: value,
+    window: Math.max(0, Math.floor(Number(window)) || 0),
+    at: Date.now(),
+  });
+  if (budgetByModel.size > MODEL_BUDGET_LIMIT) {
+    const oldest = [...budgetByModel.entries()].sort((left, right) => left[1].at - right[1].at)[0];
+    if (oldest) budgetByModel.delete(oldest[0]);
+  }
+  scheduleModelBudgetFlush();
+}
+
+/** 这个模型上次设的预算；没有记过就是 0。 */
+function rememberedBudgetFor(provider, model) {
+  const key = modelKeyOf(provider, model);
+  if (key === null) return 0;
+  return budgetByModel.get(key)?.budget ?? 0;
+}
 
 const DEFAULTS = Object.freeze({
   /** 分级起点：窗口不超过它就不分级。 */
@@ -326,6 +446,16 @@ export function apply(ctx, rawConfig) {
   /** sessionId -> 上一次压缩的时间戳，防死循环。 */
   const lastCompactAt = new Map();
 
+  /* 跨会话的按模型记录：进程启动时读回来，卸载时落盘。 */
+  loadModelBudgets();
+  ctx.effect(() => () => {
+    if (modelBudgetFlushTimer !== null) {
+      clearTimeout(modelBudgetFlushTimer);
+      modelBudgetFlushTimer = null;
+    }
+    flushModelBudgets();
+  }, `[${PLUGIN_NAME}] usage persistence`);
+
   const presetsOf = () => {
     try {
       return ctx.get('agentPresets') ?? null;
@@ -455,6 +585,9 @@ export function apply(ctx, rawConfig) {
    * 比猜一个常数可靠；真窗口到达后 `request/context` 仍会覆盖它。
    */
   let lastSeenWindow = 0;
+  /** 默认路由的身份：新会话在首次请求前就能按模型取回「上次设的预算」。 */
+  let defaultProvider = '';
+  let defaultModel = '';
   /** 已注册的投影句柄。未就绪时 `budgetOf()` 退回进程内 Map。 */
   let projectionHandle = null;
 
@@ -488,7 +621,10 @@ export function apply(ctx, rawConfig) {
    */
   const foldProjection = (state, event) => {
     if (!event || typeof event !== 'object') return state;
-    const safe = state && typeof state === 'object' ? state : { requested: 0, budget: 0, window: 0, seeded: false };
+    const safe =
+      state && typeof state === 'object'
+        ? state
+        : { requested: 0, budget: 0, window: 0, seeded: false, provider: '', model: '' };
     if (event.type === 'command/run' && event.data?.name === COMMAND_NAME) {
       /* v0.2.7 及更早的命令设了 `recordInput: false`，日志里没有 `args`：
          这类事件不能当成「预算 = 0」，否则用户升级后预算会凭空消失。
@@ -501,13 +637,21 @@ export function apply(ctx, rawConfig) {
       return { ...safe, requested, budget, seeded: true };
     }
     if (event.type === 'request/context') {
-      const window = tokenFloor(event.data?.contextWindow);
-      if (window <= 0) return state;
+      const nextWindow = tokenFloor(event.data?.contextWindow);
+      const nextProvider =
+        typeof event.data?.provider === 'string' ? event.data.provider : typeof safe.provider === 'string' ? safe.provider : '';
+      const nextModel =
+        typeof event.data?.model === 'string' ? event.data.model : typeof safe.model === 'string' ? safe.model : '';
+      const modelChanged = nextProvider !== (safe.provider ?? '') || nextModel !== (safe.model ?? '');
+      if (nextWindow <= 0) {
+        /* 窗口没给但路由给了：模型身份也要折进来，按模型记忆的预算才能生效。 */
+        return modelChanged ? { ...safe, provider: nextProvider, model: nextModel } : state;
+      }
       /* 任何会话量到的窗口都给后续新会话当兜底（同一进程里窗口几乎不变）。 */
-      if (window > lastSeenWindow) lastSeenWindow = window;
-      if (window === safe.window) return state;
-      const budget = safe.requested > 0 ? alignBudget(safe.requested, window) : 0;
-      return { ...safe, window, budget };
+      if (nextWindow > lastSeenWindow) lastSeenWindow = nextWindow;
+      if (nextWindow === safe.window && !modelChanged) return state;
+      const budget = safe.requested > 0 ? alignBudget(safe.requested, nextWindow) : 0;
+      return { ...safe, window: nextWindow, budget, provider: nextProvider, model: nextModel };
     }
     return state;
   };
@@ -518,6 +662,11 @@ export function apply(ctx, rawConfig) {
     window: tokenFloor(state?.window),
     /* 预算是否来自日志里的本命令；false 时客户端做一次性迁移（推回旧值）。 */
     seeded: state?.seeded === true,
+    /* 路由身份：客户端用它去取「这个模型上次设的预算」。 */
+    provider: typeof state?.provider === 'string' ? state.provider : '',
+    model: typeof state?.model === 'string' ? state.model : '',
+    /* 跨会话记忆：该模型上次设过的预算（0 = 没记过 / 已取消）。 */
+    modelBudget: rememberedBudgetFor(state?.provider, state?.model),
     triggerRatio: settings.triggerRatio,
     targetRatio: settings.targetRatio,
     baseTokens: settings.baseTokens,
@@ -537,6 +686,8 @@ export function apply(ctx, rawConfig) {
         budget: tokenFloor(source.budget),
         window: tokenFloor(source.window),
         seeded: source.seeded === true,
+        provider: typeof source.provider === 'string' ? source.provider : '',
+        model: typeof source.model === 'string' ? source.model : '',
       };
     },
   };
@@ -548,6 +699,9 @@ export function apply(ctx, rawConfig) {
         budget: tokenFloor(source.budget),
         window: tokenFloor(source.window),
         seeded: source.seeded === true,
+        provider: typeof source.provider === 'string' ? source.provider : '',
+        model: typeof source.model === 'string' ? source.model : '',
+        modelBudget: tokenFloor(source.modelBudget),
         triggerRatio: settings.triggerRatio,
         targetRatio: settings.targetRatio,
         baseTokens: settings.baseTokens,
@@ -590,6 +744,9 @@ export function apply(ctx, rawConfig) {
       const provider = selection?.provider;
       const model = selection?.model;
       if (!llm || typeof llm.resolveModelInfo !== 'function' || !provider || !model) return null;
+      /* 路由身份先记下来：即便窗口解析失败，新会话也能按模型取回预算。 */
+      defaultProvider = String(provider);
+      defaultModel = String(model);
       try {
         const info = await llm.resolveModelInfo(provider, model);
         return tokenFloor(info?.context?.contextWindow);
@@ -659,35 +816,6 @@ export function apply(ctx, rawConfig) {
     }
 
     const triggerAt = Math.floor(budget * settings.triggerRatio);
-    let measurement;
-    try {
-      measurement = meter.measure(session);
-    } catch (error) {
-      log('warn', `measure failed: ${error instanceof Error ? error.message : String(error)}`);
-      return;
-    }
-    if (!(measurement.totalTokens >= triggerAt)) return;
-
-    /*
-     * 仿宿主 compactIfNeeded 的顺序：先做零成本的 tool-result 剪枝，
-     * 剪完够低就不再花钱调模型摘要。
-     */
-    if (pruner) {
-      try {
-        pruner.pruneSession(session);
-        measurement = meter.measure(session);
-      } catch (error) {
-        log('warn', `prune failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      if (!(measurement.totalTokens >= triggerAt)) {
-        log('info', `pruned down to ${measurement.totalTokens} tokens; no summarization needed`);
-        return;
-      }
-    }
-
-    const now = Date.now();
-    if (now - (lastCompactAt.get(session.id) ?? 0) < settings.minIntervalMs) return;
-
     /*
      * 保留尾部的下限：`0.5 × 预算`，但绝不低于 64K。
      *
@@ -699,9 +827,97 @@ export function apply(ctx, rawConfig) {
     const MIN_RETAIN_TOKENS = 64 * 1024;
     const targetAt = Math.max(MIN_RETAIN_TOKENS, Math.floor(budget * settings.targetRatio));
 
+    let routed = null;
+    try {
+      routed = session.requestContext?.() ?? null;
+    } catch {
+      routed = null;
+    }
+    const provider = routed?.provider ?? agent?.options?.provider ?? '';
+    const model = routed?.model ?? agent?.options?.model ?? '';
+    const window = tokenFloor(routed?.contextWindow) || tokenFloor(lastSeenWindow);
+
+    let measurement;
+    try {
+      measurement = meter.measure(session);
+    } catch (error) {
+      log('warn', `measure failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+
+    /*
+     * **真实口径**：`contextPressure.pressureTokens` 是 provider 上报的提示词
+     * 大小（input + cache），和界面圆环、模型窗口同一个数。`measure()` 走的是
+     * 宿主的 `chars / 4` 启发式，中文叙述会被低估三到四成 —— 只看它就会
+     * 出现「界面 192K、插件认为 167K、永远不触发」的分叉。
+     *
+     * 因此取两者较大值：任一口径越线都算越线。`pressure` 是上一次请求的快照，
+     * 本次剪枝/压缩缩掉的 surface 量 `removedSurface` 要从它里面扣掉，否则
+     * 压完仍拿旧的大数判定，会在同一个 step 里反复压。
+     */
+    const pressureOf = () => {
+      try {
+        return tokenFloor(meter.contextPressure?.(session)?.pressureTokens);
+      } catch {
+        return 0;
+      }
+    };
+    let pressure = pressureOf();
+    let removedSurface = 0;
+    const effective = () => Math.max(measurement.totalTokens, Math.max(0, pressure - removedSurface));
+    const note = (action, extra = {}) => {
+      lastDecisionBySession.set(session.id, {
+        action,
+        at: Date.now(),
+        measured: measurement.totalTokens,
+        pressure,
+        total: effective(),
+        triggerAt,
+        targetAt,
+        budget,
+        window,
+        model: `${provider}/${model}`,
+        ...extra,
+      });
+    };
+
+    if (!(effective() >= triggerAt)) {
+      note('idle');
+      return;
+    }
+
+    /*
+     * 仿宿主 compactIfNeeded 的顺序：先做零成本的 tool-result 剪枝，
+     * 剪完够低就不再花钱调模型摘要。
+     */
+    if (pruner) {
+      try {
+        const surfaceBefore = tokenFloor(measurement.surfaceTokens);
+        pruner.pruneSession(session);
+        measurement = meter.measure(session);
+        removedSurface += Math.max(0, surfaceBefore - tokenFloor(measurement.surfaceTokens));
+      } catch (error) {
+        log('warn', `prune failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (!(effective() >= triggerAt)) {
+        note('pruned');
+        log(
+          'info',
+          `pruned down to ${effective()} tokens (measure ${measurement.totalTokens}, provider ${pressure}); no summarization needed`,
+        );
+        return;
+      }
+    }
+
+    const now = Date.now();
+    if (now - (lastCompactAt.get(session.id) ?? 0) < settings.minIntervalMs) {
+      note('throttled');
+      return;
+    }
+
     log(
       'info',
-      `step boundary at ${measurement.totalTokens} tokens >= ${settings.triggerRatio * 100}% of budget ${budget} (${triggerAt}); compacting toward ${targetAt}`
+      `step boundary at ${effective()} tokens (measure ${measurement.totalTokens}, provider ${pressure}) >= ${settings.triggerRatio * 100}% of budget ${budget} (${triggerAt}); compacting toward ${targetAt}`,
     );
 
     for (let attempt = 0; attempt < settings.maxAttempts; attempt += 1) {
@@ -710,6 +926,7 @@ export function apply(ctx, rawConfig) {
          剩下的总量就该落在 targetAt 附近。 */
       const range = selectRange(session, measurement.nodes, targetAt);
       if (range === null) {
+        note('no-range');
         log('info', 'no compactable range (tool-pairing cannot be satisfied); stopping');
         return;
       }
@@ -718,7 +935,7 @@ export function apply(ctx, rawConfig) {
         lastCompactAt.set(session.id, Date.now());
         log(
           'info',
-          `compacted ${result?.shadowedSeqs?.length ?? '?'} nodes (~${result?.shadowedTokenCount ?? '?'} tokens)`
+          `compacted ${result?.shadowedSeqs?.length ?? '?'} nodes (~${result?.shadowedTokenCount ?? '?'} tokens)`,
         );
       } catch (error) {
         /*
@@ -726,21 +943,26 @@ export function apply(ctx, rawConfig) {
          * `assertCompactionInactive` 一路拒绝，形成静默失效。立即放弃，交给宿主。
          */
         lastCompactAt.set(session.id, Date.now());
+        note('failed', { error: error instanceof Error ? error.message : String(error) });
         log('warn', `compaction failed: ${error instanceof Error ? error.message : String(error)}`);
         return;
       }
       try {
+        const surfaceBefore = tokenFloor(measurement.surfaceTokens);
         measurement = meter.measure(session);
+        removedSurface += Math.max(0, surfaceBefore - tokenFloor(measurement.surfaceTokens));
       } catch (error) {
         log('warn', `re-measure failed: ${error instanceof Error ? error.message : String(error)}`);
         return;
       }
-      if (measurement.totalTokens < triggerAt) {
-        log('info', `context now ${measurement.totalTokens} tokens, below trigger ${triggerAt}; resuming session`);
+      if (!(effective() >= triggerAt)) {
+        note('compacted');
+        log('info', `context now ${effective()} tokens, below trigger ${triggerAt}; resuming session`);
         return;
       }
-      log('info', `still ${measurement.totalTokens} >= ${triggerAt}; compacting again`);
+      log('info', `still ${effective()} >= ${triggerAt}; compacting again`);
     }
+    note('max-attempts');
     log('warn', `still above trigger after ${settings.maxAttempts} attempts; leaving it to the host`);
   };
 
@@ -820,6 +1042,10 @@ export function apply(ctx, rawConfig) {
              在首次请求前没有任何档位可选。 */
           window: defaultWindow > 0 ? defaultWindow : lastSeenWindow,
           seeded: false,
+          /* 新会话还没发过请求，先用默认路由的身份，客户端才能按模型
+             取回上次设的预算。 */
+          provider: defaultProvider,
+          model: defaultModel,
         }),
         apply: foldProjection,
         wire: { viewSchema: projectionViewSchema, view: projectionView, summary: false },
@@ -862,6 +1088,7 @@ export function apply(ctx, rawConfig) {
       if (!id) return;
       budgetBySession.delete(id);
       lastCompactAt.delete(id);
+      lastDecisionBySession.delete(id);
     });
     return () => dispose();
   }, `[${PLUGIN_NAME}] session cleanup`);
@@ -904,6 +1131,25 @@ export function apply(ctx, rawConfig) {
 
         /* 向下对齐到「不大于请求值」的档；窗口未知时按原值记。 */
         const next = tokens > 0 ? alignBudget(tokens, window) : 0;
+        /*
+         * 按模型记住这次设置（跨会话）：下一次同模型的新会话挂载时，客户端
+         * 会把它推回来。设成 0 视为「取消该模型的记忆」，不再自动套用。
+         */
+        let budgetProvider = '';
+        let budgetModel = '';
+        try {
+          const routed = agent?.session?.requestContext?.() ?? null;
+          budgetProvider = routed?.provider ?? agent?.options?.provider ?? '';
+          budgetModel = routed?.model ?? agent?.options?.model ?? '';
+        } catch {
+          budgetProvider = '';
+          budgetModel = '';
+        }
+        if (!budgetModel) {
+          budgetProvider = defaultProvider;
+          budgetModel = defaultModel;
+        }
+        recordModelBudget(budgetProvider, budgetModel, next, window);
         const current = budgetOf(agent?.session);
         if (next === current && budgetBySession.get(sessionId) !== undefined) {
           /* 重复设置同一个值：不写状态、不再记一条 host 日志。命令本身的两条
@@ -960,8 +1206,23 @@ export function apply(ctx, rawConfig) {
         } catch {
           window = 0;
         }
+        /* 当前会话的路由身份：状态命令里一并报出「这个模型记住的预算」。 */
+        let provider = '';
+        let model = '';
+        try {
+          const routed = session?.requestContext?.() ?? null;
+          provider = routed?.provider ?? agent?.options?.provider ?? '';
+          model = routed?.model ?? agent?.options?.model ?? '';
+        } catch {
+          provider = '';
+          model = '';
+        }
+        if (!model) {
+          provider = defaultProvider;
+          model = defaultModel;
+        }
         const payload = {
-          v: 2,
+          v: 3,
           budget,
           window,
           enabled: settings.enabled,
@@ -972,6 +1233,15 @@ export function apply(ctx, rawConfig) {
           maxAttempts: settings.maxAttempts,
           minIntervalMs: settings.minIntervalMs,
           projection: PROJECTION_KEY,
+          /*
+           * 诊断：为什么这一步压/没压。`total` 是判定用的数（真实提示词与估算
+           * 取大），`measured` 是 `tokenMeter.measure()`、`pressure` 是 provider
+           * 上报 —— 两者相差多少一眼就能看出来。
+           */
+          lastDecision: session ? lastDecisionBySession.get(session.id) ?? null : null,
+          /* 跨会话的按模型预算记忆（只记设置值，不记用量统计）。 */
+          model: modelKeyOf(provider, model) ?? null,
+          modelBudget: rememberedBudgetFor(provider, model),
         };
         return { kind: 'success', text: JSON.stringify(payload) };
       },

@@ -9,7 +9,6 @@
   "budget.roomy": "Roomier",
   "tier.full": "Full window",
   "tier.value": "{tier}",
-  "budget.trigger": "Trigger",
   "budget.nextRequest": "Takes effect on the next step",
   "budget.notGraded": "This model window does not exceed {base}, so no tiers apply",
   "budget.unknownWindow": "Context window not measured yet",
@@ -17,6 +16,13 @@
   "budget.estimated": "Window estimated from the last measurement ({window}); it corrects after the first request",
   "budget.failed": "Could not save the budget",
   "trigger.window": "Window",
+  "usage.title": "Context usage",
+  "usage.basis": "Measured against",
+  "usage.basis.window": "Full window",
+  "usage.basis.budget": "Soft cap",
+  "usage.line": "Using ~{used} / {cap} ({percent}%)",
+  "usage.unavailable": "No measured usage yet",
+  "usage.trigger": "Trigger at {tier}",
   "meta": {
     "title": "Context length budget",
     "description": "Adds a discrete tier slider beside the composer for a per-session context budget; when usage passes the configured trigger ratio, the oldest history is pruned and compacted before the next step. Tiers and trigger ratio follow the host config."

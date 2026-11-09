@@ -3,7 +3,12 @@
  * 不碰真实宿主，只检查监听器注册点、next() 语义、剪枝顺序和失败退出。
  */
 import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+/* 用量记录落盘写到一个临时文件，别弄脏真实的 ~/.dsh。 */
+process.env.DSH_LCB_MODELS_FILE = join(tmpdir(), `lcb-test-models-${process.pid}.json`);
 
 const INDEX = 'E:/plugins/dsh-long-context-budget/index.js';
 const CLIENT = 'E:/plugins/dsh-long-context-budget/client.js';
@@ -213,6 +218,43 @@ await hook.listener(
 findings.fail_compactAttempts = failCalls;
 findings.fail_nextCalled = nextCalls === 1;
 
+/* 5b) 真实提示词口径：`measure()` 低估（chars/4 对中文偏小）时，provider
+       上报的 `pressureTokens` 必须能把判定顶过触发线；同时 status 要带上
+       `lastDecision` 与跨会话的按模型记录。 */
+state.totalTokens = 1000;
+pruner.pruneSession = () => {};
+ctx._services.set('tokenMeter', {
+  measure() {
+    return { totalTokens: state.totalTokens, surfaceTokens: 0, nodes: [] };
+  },
+  contextPressure() {
+    return { pressureTokens: 900000, contextWindow: 1000000 };
+  },
+});
+await hook.listener(
+  { agent, messages: [{ role: 'user' }], step: 1, signal: { aborted: false } },
+  next,
+);
+
+const statusCmd2 = registeredCommands.find((c) => c.name === 'context-budget-status');
+const pressureStatus = JSON.parse(
+  String((await statusCmd2.handler({ agent, signal: { aborted: false } })).text),
+);
+findings.pressure_total = pressureStatus.lastDecision?.total ?? 0;
+findings.pressure_triggerAt = pressureStatus.lastDecision?.triggerAt ?? 0;
+findings.pressure_action = pressureStatus.lastDecision?.action ?? null;
+findings.model_key = pressureStatus.model ?? null;
+findings.model_budget = pressureStatus.modelBudget ?? 0;
+
+/* 5c) 设成 0 = 取消该模型的记忆；之后重新设回去，后面的用例还要预算。 */
+const budgetCmd = registeredCommands.find((c) => c.name === 'context-budget');
+await budgetCmd.handler({ rawInput: '0', agent, signal: { aborted: false } });
+const clearedStatus = JSON.parse(
+  String((await statusCmd2.handler({ agent, signal: { aborted: false } })).text),
+);
+findings.model_budget_after_clear = clearedStatus.modelBudget ?? -1;
+await budgetCmd.handler({ rawInput: '400000', agent, signal: { aborted: false } });
+
 /* 6) 首个 step（宿主是 1-based，turn() 里 step=phase.step+1）且空 messages：
       旧代码用 `step === 0` 跳过，但那个分支永远不成立 —— 现在必须照常测量。 */
 state.totalTokens = 999999;
@@ -408,6 +450,12 @@ const assertions = {
   'budget -> next called': findings.budget_nextCalled === true,
   'compaction failure -> one attempt': findings.fail_compactAttempts === 1,
   'compaction failure -> next called': findings.fail_nextCalled === true,
+  /* —— 真实提示词口径 + 诊断 —— */
+  'provider pressure crosses the trigger even when measure() is low':
+    findings.pressure_total >= findings.pressure_triggerAt && findings.pressure_triggerAt > 0,
+  'pressure path leaves a non-idle decision': findings.pressure_action !== null && findings.pressure_action !== 'idle',
+  'status reports the per-model budget': findings.model_key === 'p/m' && findings.model_budget === 393216,
+  'clearing the budget clears the per-model memory': findings.model_budget_after_clear === 0,
   'empty messages at FIRST step (1) still measured': findings.emptyMessagesAtFirstStep_measureCalls >= 1,
   'empty messages at FIRST step -> next called': findings.emptyMessagesAtFirstStep_nextCalled === true,
   'empty messages mid-turn still measured': findings.emptyMessagesMidTurn_measureCalls >= 1,

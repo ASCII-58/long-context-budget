@@ -96,13 +96,16 @@ function invoke(element, hooks) {
 /* BudgetSeat 的 useState 顺序：budget / open / busy / error / strings /
    settings / fallbackWindow / cachedWindow。 */
 const defaultSettings = { triggerRatio: 0.7, baseTokens: 256 * K, stepCap: 128 * K };
-const defaultSeatHooks = () => [{ 'sess-test': selectedBudget }, true, false, null, stringsStub, defaultSettings, 0, 0];
+const defaultSeatHooks = () => [{ 'sess-test': selectedBudget }, true, false, null, stringsStub, defaultSettings, 0, 0, 'budget'];
 const stringsStub = {
   language: 'zh',
   t: (key, params) => {
     const dict = {
       'budget.label': '预算', 'budget.economy': '更省', 'budget.roomy': '更宽',
-      'tier.full': '整窗', 'tier.value': '{tier}', 'budget.trigger': '触发点',
+      'tier.full': '整窗', 'tier.value': '{tier}', 'usage.trigger': '触发点 {tier}',
+      'usage.title': '上下文占用', 'usage.basis': '统计基准', 'usage.basis.window': '整窗',
+      'usage.basis.budget': '软上限', 'usage.line': '占用 ~{used} / {cap}（{percent}%）',
+      'usage.unavailable': '还没有实测占用',
       'budget.nextRequest': '下一步请求生效', 'panel.title': '上下文长度',
       'panel.close': '关闭', 'trigger.label': '上下文', 'trigger.aria': '当前上下文长度预算',
       'trigger.window': '窗口', 'budget.notGraded': '当前模型窗口未超过 {base}，无需分级',
@@ -180,7 +183,18 @@ const checks = {
   'host/client COMMAND_NAME match': !!hostCommand && hostCommand === clientCommand,
   'host/client STATUS_COMMAND match': !!hostStatus && hostStatus === clientStatus,
   'STATUS_COMMAND derives from COMMAND_NAME': hostStatus === '${COMMAND_NAME}-status',
-  'no hardcoded 70% in meta rendering': !/预算\.trigger.*70%|trigger.*0\.7/.test(clientSource.slice(clientSource.indexOf('const triggerPercent'))),
+  'trigger marker lives in the usage bar': found.includes('lcb-usage-marker'),
+  /* 面板顺序：上下文占用区在预算滑杆区之前（前序遍历，父先于子）。 */
+  'usage section precedes the slider':
+    found.indexOf('lcb-usage') >= 0 &&
+    found.indexOf('lcb-slider') >= 0 &&
+    found.indexOf('lcb-usage') < found.indexOf('lcb-slider'),
+  'trigger marker tooltip carries the trigger length': found.some((x) => x.startsWith('title:') && x.includes('448.0K')),
+  'trigger marker sits at trigger/cap': (styles.find((x) => x.cls === 'lcb-usage-marker') || {}).left === '70%',
+  /* CSS 注释里也有「触发点」三个字，只看真正的文案节点。 */
+  'no separate trigger text in the slider': !found.some(
+    (x) => x.startsWith('text:') && x.includes('触发点') && !x.includes('.lcb-')
+  ),
   'panel rendered': found.includes('lcb-panel'),
   'slider rendered': found.includes('lcb-slider'),
   'slider track role': found.includes('role:slider'),
@@ -190,7 +204,6 @@ const checks = {
   'slider ticks': found.filter((x) => x === 'lcb-slider-tick').length === tiers.length,
   'ends label tighter': found.includes('text:更省'),
   'ends label roomier': found.includes('text:更宽'),
-  'trigger point uses dynamic 70%': texts.some((x) => x.includes('70%') && x.includes('448.0K')),
   'panel value equals SELECTED TIER 640.0K': texts.filter((x) => x === '640.0K').length >= 2,
   'no "整窗" while a lower tier is active': !texts.includes('整窗'),
   'trigger shows SELECTED TIER 640.0K': texts.includes('640.0K'),
